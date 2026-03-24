@@ -577,21 +577,6 @@ class MainWindow(QMainWindow):
 
         layout.addWidget(rules_group, 1)
 
-        # --- Log ---
-        log_group = QGroupBox("Activity Log")
-        log_layout = QVBoxLayout(log_group)
-        self.log_label = QLabel("Ready.")
-        self.log_label.setObjectName("logLabel")
-        self.log_label.setWordWrap(True)
-        self.log_label.setStyleSheet(
-            f"font-family: 'Cascadia Code', 'Consolas', monospace; font-size: 11px; "
-            f"background-color: {COLOR_LIGHTER_BG}; border: 1px solid {COLOR_BORDER}; "
-            f"border-radius: 6px; padding: 8px; color: {COLOR_TEXT_DIM};"
-        )
-        self.log_label.setMinimumHeight(80)
-        log_layout.addWidget(self.log_label)
-        layout.addWidget(log_group)
-
         # --- Settings ---
         settings_group = QGroupBox("Settings")
         settings_layout = QVBoxLayout(settings_group)
@@ -620,6 +605,7 @@ class MainWindow(QMainWindow):
         self.tray = QSystemTrayIcon(self)
         if LOGO_PATH.exists():
             self.tray.setIcon(QIcon(str(ICON_PATH)))
+        self.tray.activated.connect(self._on_tray_click)
         menu = QMenu()
         show_action = QAction("Show", self)
         show_action.triggered.connect(self.show)
@@ -629,6 +615,12 @@ class MainWindow(QMainWindow):
         menu.addAction(quit_action)
         self.tray.setContextMenu(menu)
         self.tray.show()
+
+    def _on_tray_click(self, reason):
+        if reason == QSystemTrayIcon.ActivationReason.Trigger:
+            self.show()
+            self.raise_()
+            self.activateWindow()
 
     def _auto_start(self):
         """Auto-connect device and start monitoring on launch."""
@@ -668,11 +660,7 @@ class MainWindow(QMainWindow):
         return self.config.get("profiles", {}).get(profile_id, {}).get("name", f"Profile {profile_id}")
 
     def _log(self, msg: str):
-        ts = time.strftime("%H:%M:%S")
-        current = self.log_label.text()
-        lines = current.split("\n")[-9:]
-        lines.append(f"[{ts}] {msg}")
-        self.log_label.setText("\n".join(lines))
+        print(f"[{time.strftime('%H:%M:%S')}] {msg}")
 
     def _switch_profile(self, profile_id: str) -> bool:
         pid = int(profile_id)

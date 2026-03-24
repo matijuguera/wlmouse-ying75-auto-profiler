@@ -19,6 +19,10 @@
     {
       "process": "League of Legends.exe",
       "profile": "1"
+    },
+    {
+      "process": "VALORANT.exe",
+      "profile": "2"
     }
   ],
   "default_profile": "0",
