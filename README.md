@@ -6,6 +6,8 @@ Launch a game → keyboard switches to your gaming profile. Close it → back to
 
 ![Python](https://img.shields.io/badge/Python-3.10+-blue) ![Platform](https://img.shields.io/badge/Platform-Windows-lightgrey) ![License](https://img.shields.io/badge/License-MIT-green)
 
+![App Screenshot](app-screenshot.png)
+
 ## How it works
 
 The WLMouse YING 75 keyboard stores multiple profiles with different key configurations, actuation points, and lighting. The HID protocol was decoded by analyzing the JavaScript source of the official Web Hub configurator, allowing profile-switch commands to be sent directly from Python.
