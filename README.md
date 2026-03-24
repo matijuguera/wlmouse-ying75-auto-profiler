@@ -8,7 +8,7 @@ Launch a game → keyboard switches to your gaming profile. Close it → back to
 
 ## How it works
 
-The WLMouse YING 75 keyboard stores multiple profiles with different key configurations, actuation points, and lighting. This tool reverse-engineered the HID protocol used by the official web configurator to send profile-switch commands directly from Python.
+The WLMouse YING 75 keyboard stores multiple profiles with different key configurations, actuation points, and lighting. The HID protocol was decoded by analyzing the JavaScript source of the official Web Hub configurator, allowing profile-switch commands to be sent directly from Python.
 
 1. **Monitors running processes** — polls every second for processes matching your rules
 2. **Sends HID command** — when a match is found, sends the profile-switch packet over USB
@@ -47,12 +47,11 @@ python step3_auto_profiler.py
 | `wlmouse_protocol.py` | HID protocol — packet builder for the WLKB YING 75 |
 | `config.json` | User config — device info, profiles, rules, settings |
 | `step1_hid_scanner.py` | Utility — lists all HID devices to find VID/PID |
-| `step2_webhid_interceptor.js` | Utility — browser console script to capture HID traffic from the official web configurator |
 
-## How the protocol was reverse-engineered
+## How the protocol was decoded
 
 1. **Identified the device** using `hidapi` to enumerate HID devices and find the vendor-specific interface (`usage_page: 0xFFA0`)
-2. **Intercepted WebHID traffic** by injecting a monkey-patch script into the official WLMouse web configurator that logs all `sendReport()` calls
+2. **Analyzed the Web Hub source** — the official WLMouse web configurator JavaScript contains all protocol logic, including packet structures and command IDs
 3. **Decoded the packets** — profile switch uses a 64-byte report with header `0x5C 0x04`, command byte `0x70`, and the profile ID in the payload
 
 ### Device Info
@@ -68,4 +67,4 @@ python step3_auto_profiler.py
 
 ## Disclaimer
 
-This project is not affiliated with WLMouse. The HID protocol was reverse-engineered for personal use. Use at your own risk.
+This project is not affiliated with WLMouse. The HID protocol was decoded from the official Web Hub source for personal use. Use at your own risk.
