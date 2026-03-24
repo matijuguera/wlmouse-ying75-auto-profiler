@@ -103,6 +103,8 @@ STYLESHEET = f"""
     }}
     QGroupBox::title {{
         subcontrol-origin: margin;
+        subcontrol-position: top left;
+        top: 7px;
         left: 14px;
         padding: 0 6px;
         color: {COLOR_ORANGE};
