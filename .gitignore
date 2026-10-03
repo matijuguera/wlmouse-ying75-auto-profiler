@@ -2,3 +2,7 @@ __pycache__/
 *.pyc
 .claude/
 .profiler.lock
+
+# WLMouse proprietary files (firmware images, official hub source)
+*.bin
+.hub_fetch/

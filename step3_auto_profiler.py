@@ -4,6 +4,7 @@ Monitors running processes and switches keyboard profiles automatically.
 Requires: pip install hidapi psutil PyQt6
 """
 
+import ctypes
 import json
 import sys
 import time
@@ -29,9 +30,12 @@ from PyQt6.QtWidgets import (
     QMenu,
     QMessageBox,
     QFileDialog,
+    QSlider,
 )
 
 import wlmouse_protocol as proto
+
+STOCK_MAX_PERCENT = round(proto.STOCK_BRIGHTNESS_TABLE[-1] * 100 / proto.BRIGHTNESS_MAX_VALUE)
 
 BASE_DIR = Path(__file__).parent
 CONFIG_PATH = BASE_DIR / "config.json"
@@ -49,6 +53,8 @@ COLOR_BORDER = "#3a3a3a"
 
 STARTUP_REG_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 STARTUP_REG_NAME = "WLMouseAutoProfiler"
+STARTUP_APPROVED_KEY = r"Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run"
+APP_USER_MODEL_ID = "WLMouse.AutoProfiler"
 
 
 def get_startup_command() -> str:
@@ -60,14 +66,25 @@ def get_startup_command() -> str:
     return f'"{pythonw}" "{script}"'
 
 
+def _startup_disabled_in_windows() -> bool:
+    """True if the entry was turned off in Task Manager / Settings > Startup apps."""
+    try:
+        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, STARTUP_APPROVED_KEY, 0, winreg.KEY_READ)
+        value, _ = winreg.QueryValueEx(key, STARTUP_REG_NAME)
+        winreg.CloseKey(key)
+        return bool(value) and value[0] & 1 == 1  # 02 = enabled, 03 = disabled
+    except FileNotFoundError:
+        return False
+
+
 def is_startup_enabled() -> bool:
     try:
         key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, STARTUP_REG_KEY, 0, winreg.KEY_READ)
         winreg.QueryValueEx(key, STARTUP_REG_NAME)
         winreg.CloseKey(key)
-        return True
     except FileNotFoundError:
         return False
+    return not _startup_disabled_in_windows()
 
 
 def set_startup_enabled(enabled: bool):
@@ -80,6 +97,13 @@ def set_startup_enabled(enabled: bool):
         except FileNotFoundError:
             pass
     winreg.CloseKey(key)
+    # Clear Windows' own "disabled" flag so re-enabling from the app actually works
+    try:
+        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, STARTUP_APPROVED_KEY, 0, winreg.KEY_SET_VALUE)
+        winreg.DeleteValue(key, STARTUP_REG_NAME)
+        winreg.CloseKey(key)
+    except FileNotFoundError:
+        pass
 
 
 STYLESHEET = f"""
@@ -236,6 +260,26 @@ STYLESHEET = f"""
     QCheckBox::indicator:hover {{
         border-color: {COLOR_ORANGE};
     }}
+    QSlider::groove:horizontal {{
+        background: {COLOR_LIGHTER_BG};
+        height: 6px;
+        border-radius: 3px;
+        border: 1px solid {COLOR_BORDER};
+    }}
+    QSlider::handle:horizontal {{
+        background: {COLOR_ORANGE};
+        width: 18px;
+        height: 18px;
+        margin: -7px 0;
+        border-radius: 9px;
+    }}
+    QSlider::handle:horizontal:hover {{
+        background: #ffb733;
+    }}
+    QSlider::sub-page:horizontal {{
+        background: {COLOR_ORANGE};
+        border-radius: 3px;
+    }}
 """
 
 
@@ -309,21 +353,112 @@ class HIDController:
         packet = proto.get_profile()
         return self._send(packet)
 
+    def _query_cmd(self, packet: bytes, command: int) -> int | None:
+        """Send a CMD packet and return the value byte of its matching response."""
+        if not self._send(packet):
+            return None
+        try:
+            for _ in range(5):
+                data = self.device.read(64, timeout_ms=500)
+                if not data:
+                    break
+                value = proto.parse_cmd_response(data, command)
+                if value is not None:
+                    return value
+        except Exception as e:
+            print(f"CMD 0x{command:02X} read error: {e}")
+        return None
+
+    def read_brightness_table(self) -> list[int] | None:
+        """Read the PWM values for luminance levels 1-4."""
+        table = []
+        for level in range(1, 5):
+            value = self._query_cmd(
+                proto.brightness_level_cmd(level),
+                proto.CMD_BRIGHTNESS_LEVEL1 + level - 1,
+            )
+            if value is None:
+                return None
+            table.append(value)
+        return table
+
+    def write_brightness_table(self, table: list[int]) -> bool:
+        """Write PWM values for luminance levels 1-4 and verify the echo."""
+        for level, value in enumerate(table, start=1):
+            echoed = self._query_cmd(
+                proto.brightness_level_cmd(level, value),
+                proto.CMD_BRIGHTNESS_LEVEL1 + level - 1,
+            )
+            if echoed != value:
+                return False
+        return True
+
+    def read_prgb(self) -> dict | None:
+        """Query the current keyboard lighting state and return parsed dict."""
+        packet = proto.prgb_read()
+        if not self._send(packet):
+            return None
+        try:
+            data = self.device.read(64, timeout_ms=1000)
+            if data:
+                return proto.parse_prgb_response(data)
+        except Exception as e:
+            print(f"PRGB read error: {e}")
+        return None
+
+    def write_prgb(self, state: dict) -> bool:
+        """Write a full PRGB lighting state to the keyboard."""
+        packet = proto.prgb_pack(
+            mode=1,
+            colors=state["colors"],
+            switch=state["switch"],
+            direction=state["direction"],
+            super_response=state["super_response"],
+            luminance=state["luminance"],
+            light_mode=state["light_mode"],
+            speed=state["speed"],
+            sleep_delay=state["sleep_delay"],
+            static_mode=state.get("static_mode", 0),
+        )
+        return self._send(packet)
+
     @property
     def connected(self) -> bool:
         return self.device is not None
 
 
+def foreground_process_names() -> list[str] | None:
+    """Names of the focused window's process and its ancestors (lowercase), or None if unknown.
+
+    Ancestors matter because games often run the window in a child process
+    (VALORANT.exe -> VALORANT-Win64-Shipping.exe).
+    """
+    hwnd = ctypes.windll.user32.GetForegroundWindow()
+    if not hwnd:
+        return None  # transient (alt-tab, lock screen) — keep the current state
+    pid = ctypes.c_ulong()
+    ctypes.windll.user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+    try:
+        proc = psutil.Process(pid.value)
+        names = [proc.name().lower()]
+        for parent in proc.parents()[:5]:
+            names.append(parent.name().lower())
+        return names
+    except (psutil.NoSuchProcess, psutil.AccessDenied):
+        return None
+
+
 class ProcessMonitor(QObject):
-    """Watches if matched processes are running. Switches profile on launch, reverts on close."""
+    """Switches profile when a rule's process is focused (or running), reverts otherwise."""
 
     process_matched = pyqtSignal(str, str)
     process_lost = pyqtSignal()
 
-    def __init__(self, rules: list[dict], poll_interval_ms: int = 1000):
+    def __init__(self, rules: list[dict], poll_interval_ms: int = 1000, foreground_only: bool = True):
         super().__init__()
         self.rules = rules
         self.poll_interval_ms = poll_interval_ms
+        self.foreground_only = foreground_only
         self.current_match = None
         self._timer = None
 
@@ -337,24 +472,30 @@ class ProcessMonitor(QObject):
             self._timer.stop()
 
     def _poll(self):
-        running = set()
-        for proc in psutil.process_iter(["name"]):
-            try:
-                running.add(proc.info["name"].lower())
-            except (psutil.NoSuchProcess, psutil.AccessDenied):
-                continue
+        if self.foreground_only:
+            candidates = foreground_process_names()
+            if candidates is None:
+                return
+        else:
+            candidates = set()
+            for proc in psutil.process_iter(["name"]):
+                try:
+                    candidates.add(proc.info["name"].lower())
+                except (psutil.NoSuchProcess, psutil.AccessDenied, AttributeError):
+                    continue
 
         matched = None
         for rule in self.rules:
-            if rule["process"].lower() in running:
+            if rule["process"].lower() in candidates:
                 matched = (rule["process"], rule["profile"])
                 break
 
-        if matched and self.current_match is None:
-            self.current_match = matched
+        if matched == self.current_match:
+            return
+        self.current_match = matched
+        if matched:
             self.process_matched.emit(matched[0], matched[1])
-        elif not matched and self.current_match is not None:
-            self.current_match = None
+        else:
             self.process_lost.emit()
 
     def update_rules(self, rules: list[dict]):
@@ -436,6 +577,7 @@ class MainWindow(QMainWindow):
         self.config = load_config()
         self.current_profile = self.config.get("default_profile", "0")
         self.monitoring = False
+        self.prgb_state: dict | None = None
 
         self._init_hid()
         self._init_monitor()
@@ -455,6 +597,7 @@ class MainWindow(QMainWindow):
         self.monitor = ProcessMonitor(
             self.config.get("rules", []),
             self.config.get("poll_interval_ms", 1000),
+            self.config.get("foreground_only", True),
         )
         self.monitor.process_matched.connect(self._on_process_matched)
         self.monitor.process_lost.connect(self._on_process_lost)
@@ -532,6 +675,46 @@ class MainWindow(QMainWindow):
 
         layout.addWidget(profile_group)
 
+        # --- Brightness Control ---
+        brightness_group = QGroupBox("Brightness")
+        brightness_layout = QVBoxLayout(brightness_group)
+
+        slider_row = QHBoxLayout()
+
+        self.brightness_slider = QSlider(Qt.Orientation.Horizontal)
+        self.brightness_slider.setRange(0, 100)
+        self.brightness_slider.setSingleStep(1)
+        self.brightness_slider.setPageStep(10)
+        self.brightness_slider.setValue(self._brightness_percent())
+        self.brightness_slider.setEnabled(False)
+
+        self.lbl_brightness_val = QLabel(f"{self._brightness_percent()}%")
+        self.lbl_brightness_val.setFixedWidth(48)
+        self.lbl_brightness_val.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.lbl_brightness_val.setStyleSheet(
+            f"font-size: 16px; font-weight: bold; color: {COLOR_ORANGE};"
+        )
+
+        slider_row.addWidget(self.brightness_slider, 1)
+        slider_row.addWidget(self.lbl_brightness_val)
+        brightness_layout.addLayout(slider_row)
+
+        self.lbl_brightness_note = QLabel(
+            f"Factory max was {STOCK_MAX_PERCENT}%  ·  higher draws more USB power"
+        )
+        self.lbl_brightness_note.setStyleSheet(f"color: {COLOR_TEXT_DIM}; font-size: 11px;")
+        self.lbl_brightness_note.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        brightness_layout.addWidget(self.lbl_brightness_note)
+
+        # Apply live while dragging, debounced so we don't flood the HID endpoint
+        self._brightness_debounce = QTimer(self)
+        self._brightness_debounce.setSingleShot(True)
+        self._brightness_debounce.setInterval(150)
+        self._brightness_debounce.timeout.connect(self._on_brightness_changed)
+        self.brightness_slider.valueChanged.connect(self._on_brightness_slider_moved)
+
+        layout.addWidget(brightness_group)
+
         # --- Default Profile Rule ---
         default_group = QGroupBox("Default Profile")
         default_layout = QHBoxLayout(default_group)
@@ -591,6 +774,11 @@ class MainWindow(QMainWindow):
         self.chk_startup.setChecked(is_startup_enabled())
         self.chk_startup.stateChanged.connect(self._on_startup_changed)
 
+        self.chk_foreground = QCheckBox("Only use an app's profile while its window is focused")
+        self.chk_foreground.setChecked(self.config.get("foreground_only", True))
+        self.chk_foreground.stateChanged.connect(self._on_settings_changed)
+
+        settings_layout.addWidget(self.chk_foreground)
         settings_layout.addWidget(self.chk_tray)
         settings_layout.addWidget(self.chk_startup)
         layout.addWidget(settings_group)
@@ -630,6 +818,13 @@ class MainWindow(QMainWindow):
             self.lbl_device.setText(f"<span style='color:#4caf50;'>&#9679;</span> Connected")
             self._log("Device connected")
             self._read_current_profile()
+            self._read_brightness()
+            self._apply_brightness()
+            # The table lives in RAM, so any keyboard reset (profile switch with a
+            # different polling rate, replug, hub reset) reverts it to stock
+            self.brightness_watchdog = QTimer(self)
+            self.brightness_watchdog.timeout.connect(self._ensure_brightness)
+            self.brightness_watchdog.start(3000)
             self.monitor.update_rules(self.config.get("rules", []))
             self.monitor.start()
             self.monitoring = True
@@ -644,8 +839,8 @@ class MainWindow(QMainWindow):
             packet = proto.get_profile()
             self.hid.device.write(b"\x00" + packet)
             data = self.hid.device.read(64, timeout_ms=1000)
-            if data and len(data) >= 5:
-                profile_id = data[4]
+            profile_id = proto.parse_cmd_response(data, proto.CMD_CONFIG_ID) if data else None
+            if profile_id is not None:
                 profile_str = str(profile_id)
                 if profile_str in self.config.get("profiles", {}):
                     self.current_profile = profile_str
@@ -741,7 +936,71 @@ class MainWindow(QMainWindow):
 
     def _on_settings_changed(self):
         self.config["minimize_to_tray"] = self.chk_tray.isChecked()
+        self.config["foreground_only"] = self.chk_foreground.isChecked()
+        self.monitor.foreground_only = self.chk_foreground.isChecked()
         save_config(self.config)
+
+    def _read_brightness(self):
+        """Query current PRGB state from the keyboard (needed to change the level)."""
+        state = self.hid.read_prgb()
+        if state:
+            self.prgb_state = state
+            self.brightness_slider.setEnabled(True)
+        else:
+            self._log("Could not read lighting state")
+
+    def _brightness_percent(self) -> int:
+        if "brightness_percent" in self.config:
+            return max(0, min(int(self.config["brightness_percent"]), 100))
+        # Migrate the old "max" setting (PWM value of level 4)
+        legacy = self.config.get("brightness_max", proto.STOCK_BRIGHTNESS_TABLE[-1])
+        return round(int(legacy) * 100 / proto.BRIGHTNESS_MAX_VALUE)
+
+    @staticmethod
+    def _brightness_table(percent: int) -> list[int]:
+        return proto.scaled_brightness_table(round(percent * proto.BRIGHTNESS_MAX_VALUE / 100))
+
+    def _apply_brightness(self):
+        """0% = lights off (level 0); otherwise level 4 with the table scaled to the percent.
+
+        Levels 1-3 scale along, so the Fn brightness keys keep working. The table lives in
+        RAM, so it is re-applied on connect and by the watchdog after any keyboard reset.
+        """
+        percent = self._brightness_percent()
+        level = 4 if percent > 0 else 0
+        if percent > 0:
+            table = self._brightness_table(percent)
+            if not self.hid.write_brightness_table(table):
+                self._log("ERROR: Failed to write brightness table")
+                return
+        if self.prgb_state is not None and self.prgb_state["luminance"] != level:
+            state = dict(self.prgb_state, luminance=level)
+            if not self.hid.write_prgb(state):
+                self._log("ERROR: Failed to set brightness level")
+                return
+            self.prgb_state = state
+        self._log(f"Brightness set to {percent}%")
+
+    def _ensure_brightness(self):
+        """Re-apply the brightness table if the keyboard reset since the last check."""
+        percent = self._brightness_percent()
+        if percent == 0 or not hid.enumerate(self.hid.vendor_id, self.hid.product_id):
+            return  # off, or unplugged — avoid blocking on reconnect retries
+        level4 = proto.CMD_BRIGHTNESS_LEVEL1 + 3
+        value = self.hid._query_cmd(proto.brightness_level_cmd(4), level4)
+        if value is not None and value != self._brightness_table(percent)[-1]:
+            self._log("Keyboard reset detected — re-applying brightness")
+            self._apply_brightness()
+
+    def _on_brightness_slider_moved(self, value: int):
+        self.lbl_brightness_val.setText(f"{value}%")
+        self._brightness_debounce.start()
+
+    def _on_brightness_changed(self):
+        self.config["brightness_percent"] = self.brightness_slider.value()
+        self.config.pop("brightness_max", None)
+        save_config(self.config)
+        self._apply_brightness()
 
     def _on_startup_changed(self):
         enabled = self.chk_startup.isChecked()
@@ -788,6 +1047,9 @@ def main():
         QMessageBox.information(None, "WLMouse Auto Profiler",
             "Already running. Check the system tray.")
         return
+
+    # Own taskbar identity, otherwise Windows groups the window under pythonw.exe and its icon
+    ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(APP_USER_MODEL_ID)
 
     app = QApplication(sys.argv)
     app.setApplicationName("WLMouse Auto Profiler")
