@@ -31,18 +31,29 @@ Uncheck *"Only use an app's profile while its window is focused"* to match whene
 - Single instance lock (prevents duplicate processes)
 - Dark theme UI matching WLMouse branding
 
-## Setup
+## Download
+
+1. Grab **`WLMouseAutoProfiler.exe`** from the [latest release](https://github.com/matijuguera/wlmouse-ying75-auto-profiler/releases/latest)
+2. Run it — no Python or install needed
+3. Optional: tick **Start with Windows** in the app
+
+> The .exe isn't code-signed, so Windows SmartScreen may warn the first time: click **More info → Run anyway**.
+
+Settings are stored in `%APPDATA%\WLMouseAutoProfiler\config.json`.
+
+### Requirements
+
+- Windows 10/11
+- WLMouse WLKB YING 75 connected via USB
+
+## Run from source
 
 ```bash
 pip install -r requirements.txt
 python step3_auto_profiler.py
 ```
 
-### Requirements
-
-- Python 3.10+
-- Windows 10/11
-- WLMouse WLKB YING 75 connected via USB
+Requires Python 3.10+. To build the .exe yourself, run `build_exe.bat` (output in `dist/`).
 
 ## Project Structure
 
@@ -52,6 +63,7 @@ python step3_auto_profiler.py
 | `wlmouse_protocol.py` | HID protocol — packet builder for the WLKB YING 75 |
 | `config.json` | User config — device info, profiles, rules, settings |
 | `step1_hid_scanner.py` | Utility — lists all HID devices to find VID/PID |
+| `build_exe.bat` | Builds the standalone `.exe` with PyInstaller |
 | `patch_firmware_brightness.py` | Utility — patches the firmware brightness table (persistent unlock) |
 | `FIRMWARE_ANALYSIS.md` | Deep reverse engineering of the XS117 RISC-V firmware binary |
 

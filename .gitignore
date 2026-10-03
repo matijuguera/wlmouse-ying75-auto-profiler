@@ -6,3 +6,8 @@ __pycache__/
 # WLMouse proprietary files (firmware images, official hub source)
 *.bin
 .hub_fetch/
+
+# PyInstaller output
+build/
+dist/
+*.spec

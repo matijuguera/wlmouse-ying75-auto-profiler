@@ -6,6 +6,7 @@ Requires: pip install hidapi psutil PyQt6
 
 import ctypes
 import json
+import os
 import sys
 import time
 import winreg
@@ -37,10 +38,26 @@ import wlmouse_protocol as proto
 
 STOCK_MAX_PERCENT = round(proto.STOCK_BRIGHTNESS_TABLE[-1] * 100 / proto.BRIGHTNESS_MAX_VALUE)
 
+__version__ = "1.0.0"
+
+FROZEN = getattr(sys, "frozen", False)  # running as the PyInstaller .exe
 BASE_DIR = Path(__file__).parent
-CONFIG_PATH = BASE_DIR / "config.json"
-LOGO_PATH = BASE_DIR / "logo.jpg"
-ICON_PATH = BASE_DIR / "logo.ico"
+# Bundled read-only resources live in the PyInstaller temp dir when frozen
+RESOURCE_DIR = Path(getattr(sys, "_MEIPASS", BASE_DIR))
+# Writable user data can't live inside the .exe
+DATA_DIR = Path(os.environ["APPDATA"]) / "WLMouseAutoProfiler" if FROZEN else BASE_DIR
+CONFIG_PATH = DATA_DIR / "config.json"
+LOGO_PATH = RESOURCE_DIR / "logo.jpg"
+ICON_PATH = RESOURCE_DIR / "logo.ico"
+
+DEFAULT_CONFIG = {
+    "device": {"vendor_id": "0x36A7", "product_id": "0xF887", "usage_page": "0xFFA0"},
+    "profiles": {str(i): {"name": f"Profile {i + 1}"} for i in range(3)},
+    "rules": [],
+    "default_profile": "0",
+    "poll_interval_ms": 1000,
+    "minimize_to_tray": True,
+}
 
 # WLMouse brand colors
 COLOR_ORANGE = "#FFA300"
@@ -59,6 +76,8 @@ APP_USER_MODEL_ID = "WLMouse.AutoProfiler"
 
 def get_startup_command() -> str:
     """Build the command to run this script with pythonw (no console window)."""
+    if FROZEN:
+        return f'"{sys.executable}"'
     pythonw = Path(sys.executable).parent / "pythonw.exe"
     if not pythonw.exists():
         pythonw = Path(sys.executable)
@@ -284,6 +303,9 @@ STYLESHEET = f"""
 
 
 def load_config():
+    if not CONFIG_PATH.exists():
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        save_config(DEFAULT_CONFIG)
     with open(CONFIG_PATH, "r") as f:
         return json.load(f)
 
@@ -784,7 +806,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(settings_group)
 
         self._load_rules()
-        self.statusBar().showMessage("Protocol: WLMouse HID v1.0.7")
+        self.statusBar().showMessage(f"v{__version__}  ·  Protocol: WLMouse HID v1.0.7")
 
         # Start as tall as the screen allows, centered
         screen = QApplication.primaryScreen().availableGeometry()
@@ -1022,13 +1044,14 @@ class MainWindow(QMainWindow):
             QApplication.quit()
 
 
-LOCK_PATH = BASE_DIR / ".profiler.lock"
+LOCK_PATH = DATA_DIR / ".profiler.lock"
 
 
 def acquire_lock():
     """Ensure only one instance runs. Returns lock file handle or None."""
     import msvcrt
     try:
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
         lock = open(LOCK_PATH, "w")
         msvcrt.locking(lock.fileno(), msvcrt.LK_NBLCK, 1)
         lock.write(str(os.getpid()))
