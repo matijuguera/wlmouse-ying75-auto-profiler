@@ -201,10 +201,6 @@ STYLESHEET = f"""
         font-family: "Segoe UI", sans-serif;
         font-size: 13px;
     }}
-    QLabel#titleLabel {{
-        font-size: 14px;
-        font-weight: bold;
-    }}
     QLabel#dimLabel {{
         color: {COLOR_TEXT_DIM};
     }}
@@ -397,9 +393,6 @@ STYLESHEET = f"""
         border: 1px solid {COLOR_BORDER};
         border-radius: 6px;
         padding: 8px;
-    }}
-    QLabel#statusIcon {{
-        font-size: 10px;
     }}
     QCheckBox {{
         color: {COLOR_TEXT};
@@ -822,25 +815,7 @@ class MainWindow(QMainWindow):
         layout.setSizeConstraint(QLayout.SizeConstraint.SetFixedSize)
         layout.addSpacerItem(QSpacerItem(400, 0, QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed))
 
-        # --- Header ---
-        header = QHBoxLayout()
-        header.setContentsMargins(14, 10, 14, 10)
-        header.setSpacing(8)
-        if LOGO_PATH.exists():
-            logo = QLabel()
-            logo.setPixmap(rounded_logo(22))
-            header.addWidget(logo)
-        title = QLabel("Auto Profiler")
-        title.setObjectName("titleLabel")
-        header.addWidget(title)
-        header.addStretch()
-        self.lbl_device = QLabel()
-        self.lbl_device.setObjectName("statusIcon")
-        header.addWidget(self.lbl_device)
-        layout.addLayout(header)
-        layout.addWidget(hline())
-
-        # --- Profiles ---
+        # --- Profiles (the title bar already shows the logo and app name) ---
         self.profile_selector = ProfileSelector(profiles)
         self.profile_selector.selected.connect(self._switch_profile)
         profiles_row = QHBoxLayout()
@@ -918,14 +893,18 @@ class MainWindow(QMainWindow):
         self.pages.addWidget(lighting_page)
         layout.addWidget(self.pages)
 
-        # --- Footer: version + settings gear ---
+        # --- Footer: connection status, version, settings gear ---
         layout.addWidget(hline())
         footer = QHBoxLayout()
         footer.setContentsMargins(14, 4, 8, 4)
+        footer.setSpacing(10)
+        self.lbl_device = QLabel()
+        self.lbl_device.setObjectName("noteLabel")
+        footer.addWidget(self.lbl_device)
+        footer.addStretch()
         version = QLabel(f"v{__version__}")
         version.setObjectName("noteLabel")
         footer.addWidget(version)
-        footer.addStretch()
         self.btn_settings = QToolButton()
         self.btn_settings.setObjectName("gearBtn")
         self.btn_settings.setIcon(svg_icon(GEAR_SVG, COLOR_TEXT_DIM, COLOR_ORANGE))
