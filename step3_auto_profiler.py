@@ -14,24 +14,29 @@ from pathlib import Path
 
 import hid
 import psutil
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QObject, QSize
-from PyQt6.QtGui import QAction, QIcon, QPixmap, QFont, QColor, QPalette
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QObject, QPoint, QRect, QSize
+from PyQt6.QtGui import QAction, QActionGroup, QCursor, QIcon, QPixmap
 from PyQt6.QtWidgets import (
     QApplication,
-    QMainWindow,
-    QWidget,
-    QVBoxLayout,
+    QButtonGroup,
+    QComboBox,
+    QFileDialog,
+    QFrame,
     QHBoxLayout,
     QLabel,
-    QPushButton,
-    QComboBox,
-    QCheckBox,
-    QGroupBox,
-    QSystemTrayIcon,
+    QLayout,
+    QMainWindow,
     QMenu,
     QMessageBox,
-    QFileDialog,
+    QPushButton,
+    QSizePolicy,
     QSlider,
+    QSpacerItem,
+    QStackedWidget,
+    QSystemTrayIcon,
+    QToolButton,
+    QVBoxLayout,
+    QWidget,
 )
 
 import wlmouse_protocol as proto
@@ -135,22 +140,113 @@ STYLESHEET = f"""
         font-family: "Segoe UI", sans-serif;
         font-size: 13px;
     }}
-    QGroupBox {{
+    QLabel#titleLabel {{
+        font-size: 14px;
+        font-weight: bold;
+    }}
+    QLabel#dimLabel {{
+        color: {COLOR_TEXT_DIM};
+    }}
+    QLabel#noteLabel {{
+        color: {COLOR_TEXT_DIM};
+        font-size: 11px;
+    }}
+    QLabel#valueLabel {{
+        color: {COLOR_ORANGE};
+        font-size: 14px;
+        font-weight: bold;
+    }}
+    QFrame#hline {{
+        background-color: {COLOR_LIGHTER_BG};
+    }}
+    QFrame#miniPopup {{
+        border: 1px solid {COLOR_BORDER};
+    }}
+    QFrame#ruleRow {{
         background-color: {COLOR_PANEL_BG};
         border: 1px solid {COLOR_BORDER};
-        border-radius: 8px;
-        margin-top: 14px;
-        padding: 16px 12px 12px 12px;
-        font-weight: bold;
-        font-size: 13px;
+        border-radius: 6px;
     }}
-    QGroupBox::title {{
-        subcontrol-origin: margin;
-        subcontrol-position: top left;
-        top: 7px;
-        left: 14px;
-        padding: 0 6px;
+    QFrame#otherwiseRow {{
+        border: 1px dashed {COLOR_BORDER};
+        border-radius: 6px;
+    }}
+    QFrame#ruleRow QLabel, QFrame#otherwiseRow QLabel {{
+        background: transparent;
+    }}
+    QPushButton#segBtn {{
+        padding: 6px 0;
+        font-weight: normal;
+    }}
+    QPushButton#segBtn:checked {{
+        background-color: {COLOR_ORANGE};
+        border-color: {COLOR_ORANGE};
+        color: {COLOR_DARK_BG};
+        font-weight: bold;
+    }}
+    QPushButton#tabBtn {{
+        background: transparent;
+        border: none;
+        border-bottom: 2px solid transparent;
+        border-radius: 0;
+        padding: 8px 0;
+        color: {COLOR_TEXT_DIM};
+    }}
+    QPushButton#tabBtn:hover {{
+        color: {COLOR_TEXT};
+    }}
+    QPushButton#tabBtn:checked {{
         color: {COLOR_ORANGE};
+        border-bottom-color: {COLOR_ORANGE};
+    }}
+    QPushButton#linkBtn {{
+        background: transparent;
+        border: none;
+        padding: 2px 6px;
+        color: {COLOR_ORANGE};
+    }}
+    QPushButton#linkBtn:hover {{
+        color: #ffb733;
+    }}
+    QToolButton#gearBtn {{
+        background: transparent;
+        border: none;
+        color: {COLOR_TEXT_DIM};
+        font-size: 17px;
+        padding: 2px 4px;
+    }}
+    QToolButton#gearBtn:hover {{
+        color: {COLOR_ORANGE};
+    }}
+    QMenu {{
+        background-color: {COLOR_PANEL_BG};
+        border: 1px solid {COLOR_BORDER};
+        padding: 4px 0;
+    }}
+    QMenu::item {{
+        padding: 6px 16px 6px 30px;
+    }}
+    QMenu::item:selected {{
+        background-color: {COLOR_LIGHTER_BG};
+    }}
+    QMenu::item:disabled {{
+        color: {COLOR_TEXT_DIM};
+    }}
+    QMenu::indicator {{
+        width: 12px;
+        height: 12px;
+        left: 10px;
+        border: 1px solid {COLOR_BORDER};
+        border-radius: 3px;
+    }}
+    QMenu::indicator:checked {{
+        background-color: {COLOR_ORANGE};
+        border-color: {COLOR_ORANGE};
+    }}
+    QMenu::separator {{
+        height: 1px;
+        background: {COLOR_BORDER};
+        margin: 4px 0;
     }}
     QPushButton {{
         background-color: {COLOR_LIGHTER_BG};
@@ -168,15 +264,6 @@ STYLESHEET = f"""
         background-color: {COLOR_ORANGE};
         color: {COLOR_DARK_BG};
     }}
-    QPushButton#btnSwitch {{
-        background-color: {COLOR_ORANGE};
-        color: {COLOR_DARK_BG};
-        font-weight: bold;
-        border: none;
-    }}
-    QPushButton#btnSwitch:hover {{
-        background-color: #ffb733;
-    }}
     QPushButton#btnAdd {{
         border-style: dashed;
         border-color: {COLOR_TEXT_DIM};
@@ -189,6 +276,7 @@ STYLESHEET = f"""
     QPushButton#btnDel {{
         background-color: transparent;
         border: none;
+        padding: 0;
         color: {COLOR_TEXT_DIM};
         font-weight: bold;
         font-size: 15px;
@@ -522,73 +610,203 @@ class ProcessMonitor(QObject):
         self.rules = rules
 
 
-class RuleRow(QWidget):
-    """A single rule row: process label + profile combo + delete button."""
-    deleted = pyqtSignal(object)
-    changed = pyqtSignal()
+class ProfileSelector(QWidget):
+    """Segmented buttons, one per keyboard profile; the active one is highlighted."""
 
-    def __init__(self, profiles: dict, process: str = "", profile: str = "0", parent=None):
+    selected = pyqtSignal(str)
+
+    def __init__(self, profiles: dict, short: bool = False, parent=None):
         super().__init__(parent)
-        self.process_name = process
-        self.setFixedHeight(44)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
+        self.group = QButtonGroup(self)
+        self.buttons: dict[str, QPushButton] = {}
+        for pid, pdata in profiles.items():
+            btn = QPushButton(str(int(pid) + 1) if short else pdata["name"])
+            btn.setObjectName("segBtn")
+            btn.setCheckable(True)
+            btn.setToolTip(pdata["name"])
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.clicked.connect(lambda _=False, p=pid: self.selected.emit(p))
+            self.group.addButton(btn)
+            self.buttons[pid] = btn
+            layout.addWidget(btn)
+
+    def set_active(self, profile_id: str):
+        if profile_id in self.buttons:
+            self.buttons[profile_id].setChecked(True)
+
+
+class BrightnessControl(QWidget):
+    """0-100% slider with a readout; `changed` fires only for user moves."""
+
+    changed = pyqtSignal(int)
+
+    def __init__(self, value: int, show_icon: bool = False, parent=None):
+        super().__init__(parent)
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(8)
+        if show_icon:
+            icon = QLabel("☀")
+            icon.setObjectName("dimLabel")
+            layout.addWidget(icon)
+        self.slider = QSlider(Qt.Orientation.Horizontal)
+        self.slider.setRange(0, 100)
+        self.slider.setPageStep(10)
+        self.slider.setValue(value)
+        self.slider.setEnabled(False)  # until the lighting state is read from the keyboard
+        self.lbl_value = QLabel(f"{value}%")
+        self.lbl_value.setObjectName("valueLabel")
+        self.lbl_value.setFixedWidth(44)
+        self.lbl_value.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        layout.addWidget(self.slider, 1)
+        layout.addWidget(self.lbl_value)
+        self.slider.valueChanged.connect(self._on_moved)
 
-        # Process label + browse button
-        self.lbl_process = QLabel(process or "No process selected")
-        self.lbl_process.setStyleSheet(
-            f"color: {COLOR_TEXT}; font-size: 13px; padding: 4px 8px; "
-            f"background-color: {COLOR_LIGHTER_BG}; border: 1px solid {COLOR_BORDER}; border-radius: 6px;"
-        )
-        self.lbl_process.setFixedHeight(34)
-        if not process:
-            self.lbl_process.setStyleSheet(
-                f"color: {COLOR_TEXT_DIM}; font-size: 13px; padding: 4px 8px; font-style: italic; "
-                f"background-color: {COLOR_LIGHTER_BG}; border: 1px solid {COLOR_BORDER}; border-radius: 6px;"
-            )
+    def _on_moved(self, value: int):
+        self.lbl_value.setText(f"{value}%")
+        self.changed.emit(value)
 
-        btn_browse = QPushButton("Browse...")
-        btn_browse.setFixedSize(90, 34)
-        btn_browse.clicked.connect(self._browse)
+    def set_value(self, value: int):
+        self.slider.blockSignals(True)
+        self.slider.setValue(value)
+        self.slider.blockSignals(False)
+        self.lbl_value.setText(f"{value}%")
 
-        self.profile_combo = QComboBox()
-        self.profile_combo.setFixedHeight(34)
-        for pid, pdata in profiles.items():
-            self.profile_combo.addItem(pdata["name"], pid)
-        idx = self.profile_combo.findData(profile)
-        if idx >= 0:
-            self.profile_combo.setCurrentIndex(idx)
+
+class RuleRow(QFrame):
+    """One rule on a single line: app name, profile combo, remove button."""
+
+    deleted = pyqtSignal(object)
+    changed = pyqtSignal()
+
+    def __init__(self, profiles: dict, process: str, profile: str, parent=None):
+        super().__init__(parent)
+        self.setObjectName("ruleRow")
+        self.process_name = process
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(10, 4, 4, 4)
+        layout.setSpacing(6)
+
+        lbl_name = QLabel(Path(process).stem)
+        lbl_name.setToolTip(process)
+        # Don't let long exe names widen the window; they're clipped instead
+        lbl_name.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+
+        self.profile_combo = make_profile_combo(profiles, profile)
         self.profile_combo.currentIndexChanged.connect(lambda: self.changed.emit())
 
-        btn_del = QPushButton("Delete")
-        btn_del.setFixedSize(70, 34)
+        btn_del = QPushButton("✕")
+        btn_del.setObjectName("btnDel")
+        btn_del.setFixedSize(26, 26)
+        btn_del.setToolTip("Remove rule")
         btn_del.clicked.connect(lambda: self.deleted.emit(self))
 
-        layout.addWidget(self.lbl_process, 1)
-        layout.addWidget(btn_browse)
+        layout.addWidget(lbl_name, 1)
         layout.addWidget(self.profile_combo)
         layout.addWidget(btn_del)
 
-    def _browse(self):
-        path, _ = QFileDialog.getOpenFileName(
-            self, "Select Executable", "C:/",
-            "Executables (*.exe);;All Files (*)"
-        )
-        if path:
-            name = Path(path).name
-            self.process_name = name
-            self.lbl_process.setText(name)
-            self.lbl_process.setStyleSheet(
-                f"color: {COLOR_TEXT}; font-size: 13px; padding: 4px 8px; "
-                f"background-color: {COLOR_LIGHTER_BG}; border: 1px solid {COLOR_BORDER}; border-radius: 6px;"
-            )
-            self.changed.emit()
+    def get_rule(self) -> dict:
+        return {"process": self.process_name, "profile": self.profile_combo.currentData()}
 
-    def get_rule(self) -> dict | None:
-        if self.process_name:
-            return {"process": self.process_name, "profile": self.profile_combo.currentData()}
-        return None
+
+def make_profile_combo(profiles: dict, selected: str) -> QComboBox:
+    combo = QComboBox()
+    combo.setFixedWidth(112)
+    for pid, pdata in profiles.items():
+        combo.addItem(pdata["name"], pid)
+    idx = combo.findData(selected)
+    if idx >= 0:
+        combo.setCurrentIndex(idx)
+    return combo
+
+
+def hline() -> QFrame:
+    line = QFrame()
+    line.setObjectName("hline")
+    line.setFixedHeight(1)
+    return line
+
+
+class MiniPopup(QFrame):
+    """Quick controls shown on tray left-click; closes when clicking elsewhere."""
+
+    open_requested = pyqtSignal()
+
+    def __init__(self, profiles: dict, brightness: int):
+        super().__init__(None, Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint)
+        self.setObjectName("miniPopup")
+        self.setFixedWidth(260)
+        self._hidden_at = 0.0
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(12, 10, 12, 12)
+        layout.setSpacing(10)
+
+        header = QHBoxLayout()
+        header.setSpacing(8)
+        if LOGO_PATH.exists():
+            logo = QLabel()
+            logo.setPixmap(QPixmap(str(LOGO_PATH)).scaled(
+                18, 18, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
+            header.addWidget(logo)
+        title = QLabel("YING 75")
+        title.setObjectName("titleLabel")
+        header.addWidget(title)
+        header.addStretch()
+        self.lbl_status = QLabel()
+        self.lbl_status.setObjectName("statusIcon")
+        header.addWidget(self.lbl_status)
+        layout.addLayout(header)
+
+        self.profiles = ProfileSelector(profiles, short=True)
+        layout.addWidget(self.profiles)
+
+        self.brightness = BrightnessControl(brightness, show_icon=True)
+        layout.addWidget(self.brightness)
+
+        rules = QFrame()
+        rules.setObjectName("ruleRow")
+        rules_layout = QHBoxLayout(rules)
+        rules_layout.setContentsMargins(10, 4, 4, 4)
+        self.lbl_rules = QLabel()
+        btn_edit = QPushButton("Edit ▸")
+        btn_edit.setObjectName("linkBtn")
+        btn_edit.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn_edit.clicked.connect(self.open_requested.emit)
+        rules_layout.addWidget(self.lbl_rules, 1)
+        rules_layout.addWidget(btn_edit)
+        layout.addWidget(rules)
+
+    def set_rule_count(self, count: int):
+        self.lbl_rules.setText(f"<span style='color:{COLOR_TEXT_DIM};'>Auto:</span> "
+                               f"{count} app{'' if count == 1 else 's'}")
+
+    def toggle_near(self, anchor: QRect):
+        # Clicking the tray icon while open first closes the popup (outside click);
+        # don't immediately reopen it on that same click
+        if self.isVisible() or time.monotonic() - self._hidden_at < 0.3:
+            self.hide()
+            return
+        self.adjustSize()
+        if not anchor.isValid() or anchor.isEmpty():
+            anchor = QRect(QCursor.pos(), QSize(1, 1))
+        screen = QApplication.screenAt(anchor.center()) or QApplication.primaryScreen()
+        avail = screen.availableGeometry()
+        x = anchor.center().x() - self.width() // 2
+        y = anchor.top() - self.height() - 8
+        if y < avail.top():
+            y = anchor.bottom() + 8
+        x = max(avail.left() + 8, min(x, avail.right() - self.width() - 8))
+        y = max(avail.top() + 8, min(y, avail.bottom() - self.height() - 8))
+        self.move(x, y)
+        self.show()
+        self.activateWindow()
+
+    def hideEvent(self, event):
+        self._hidden_at = time.monotonic()
+        super().hideEvent(event)
 
 
 class MainWindow(QMainWindow):
@@ -624,216 +842,228 @@ class MainWindow(QMainWindow):
 
     def _init_ui(self):
         self.setWindowTitle("WLMouse Auto Profiler")
-        self.setMinimumWidth(620)
-
-        # Window icon
         if LOGO_PATH.exists():
             self.setWindowIcon(QIcon(str(ICON_PATH)))
+        profiles = self.config["profiles"]
 
         central = QWidget()
         self.setCentralWidget(central)
         layout = QVBoxLayout(central)
-        layout.setSpacing(12)
-        layout.setContentsMargins(16, 12, 16, 8)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        # The window always fits its content (grows/shrinks with the rules). A fixed
+        # width on the widget would be overridden by SetFixedSize, so the width comes
+        # from this zero-height spacer instead
+        layout.setSizeConstraint(QLayout.SizeConstraint.SetFixedSize)
+        layout.addSpacerItem(QSpacerItem(400, 0, QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed))
 
-        # --- Header with logo ---
+        # --- Header ---
         header = QHBoxLayout()
-        header.setSpacing(12)
-
+        header.setContentsMargins(14, 10, 14, 10)
+        header.setSpacing(8)
         if LOGO_PATH.exists():
-            logo_label = QLabel()
-            pixmap = QPixmap(str(LOGO_PATH)).scaled(
-                40, 40, Qt.AspectRatioMode.KeepAspectRatio,
-                Qt.TransformationMode.SmoothTransformation
-            )
-            logo_label.setPixmap(pixmap)
-            header.addWidget(logo_label)
-
-        title_col = QVBoxLayout()
-        title_col.setSpacing(0)
-        title_label = QLabel("WLMouse Auto Profiler")
-        title_label.setStyleSheet(f"font-size: 18px; font-weight: bold; color: {COLOR_ORANGE};")
-        subtitle_label = QLabel("WLKB YING 75")
-        subtitle_label.setStyleSheet(f"font-size: 11px; color: {COLOR_TEXT_DIM};")
-        title_col.addWidget(title_label)
-        title_col.addWidget(subtitle_label)
-        header.addLayout(title_col)
+            logo = QLabel()
+            logo.setPixmap(QPixmap(str(LOGO_PATH)).scaled(
+                22, 22, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
+            header.addWidget(logo)
+        title = QLabel("Auto Profiler")
+        title.setObjectName("titleLabel")
+        header.addWidget(title)
         header.addStretch()
-
-        # Status indicator in header
         self.lbl_device = QLabel()
         self.lbl_device.setObjectName("statusIcon")
         header.addWidget(self.lbl_device)
-
         layout.addLayout(header)
+        layout.addWidget(hline())
 
-        # --- Active Profile + Manual Switch ---
-        profile_group = QGroupBox("Active Profile")
-        profile_layout = QVBoxLayout(profile_group)
+        # --- Profiles ---
+        self.profile_selector = ProfileSelector(profiles)
+        self.profile_selector.selected.connect(self._switch_profile)
+        profiles_row = QHBoxLayout()
+        profiles_row.setContentsMargins(14, 10, 14, 10)
+        profiles_row.addWidget(self.profile_selector)
+        layout.addLayout(profiles_row)
+        layout.addWidget(hline())
 
-        self.lbl_profile = QLabel(self._profile_name(self.current_profile))
-        self.lbl_profile.setStyleSheet(f"font-size: 22px; font-weight: bold; color: {COLOR_ORANGE}; padding: 4px 0;")
-        self.lbl_profile.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        profile_layout.addWidget(self.lbl_profile)
+        # --- Tabs ---
+        tab_bar = QHBoxLayout()
+        tab_bar.setContentsMargins(0, 0, 0, 0)
+        tab_bar.setSpacing(0)
+        self.pages = QStackedWidget()
+        tab_group = QButtonGroup(self)
+        self.tab_buttons: list[QPushButton] = []
+        for index, name in enumerate(("Rules", "Lighting")):
+            btn = QPushButton(name)
+            btn.setObjectName("tabBtn")
+            btn.setCheckable(True)
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.clicked.connect(lambda _=False, i=index: self.pages.setCurrentIndex(i))
+            tab_group.addButton(btn)
+            tab_bar.addWidget(btn)
+            self.tab_buttons.append(btn)
+        self.tab_buttons[0].setChecked(True)
+        layout.addLayout(tab_bar)
+        layout.addWidget(hline())
 
-        switch_row = QHBoxLayout()
-        switch_row.addStretch()
+        # Rules page: one row per app, then the fallback ("Otherwise") row
+        rules_page = QWidget()
+        rules_layout = QVBoxLayout(rules_page)
+        rules_layout.setContentsMargins(14, 10, 14, 10)
+        rules_layout.setSpacing(6)
+        self.rules_layout = QVBoxLayout()
+        self.rules_layout.setSpacing(6)
+        rules_layout.addLayout(self.rules_layout)
 
-        self.cmb_manual = QComboBox()
-        self.cmb_manual.setMinimumWidth(160)
-        for pid, pdata in self.config["profiles"].items():
-            self.cmb_manual.addItem(pdata["name"], pid)
+        otherwise = QFrame()
+        otherwise.setObjectName("otherwiseRow")
+        otherwise_layout = QHBoxLayout(otherwise)
+        otherwise_layout.setContentsMargins(10, 4, 4, 4)
+        otherwise_layout.setSpacing(6)
+        lbl_otherwise = QLabel("Otherwise")
+        lbl_otherwise.setObjectName("dimLabel")
+        lbl_otherwise.setToolTip("Profile used when no app from the list is matched")
+        self.cmb_default = make_profile_combo(profiles, self.config.get("default_profile", "0"))
+        self.cmb_default.currentIndexChanged.connect(self._on_default_changed)
+        otherwise_layout.addWidget(lbl_otherwise, 1)
+        otherwise_layout.addWidget(self.cmb_default)
+        otherwise_layout.addSpacing(26 + 6)  # line up with the rows' remove button
+        rules_layout.addWidget(otherwise)
 
-        self.btn_switch = QPushButton("Switch")
-        self.btn_switch.setObjectName("btnSwitch")
-        self.btn_switch.clicked.connect(self._manual_switch)
+        btn_add = QPushButton("+ Add app")
+        btn_add.setObjectName("btnAdd")
+        btn_add.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn_add.clicked.connect(self._add_app)
+        rules_layout.addWidget(btn_add)
+        rules_layout.addStretch()
+        self.pages.addWidget(rules_page)
 
-        switch_row.addWidget(self.cmb_manual)
-        switch_row.addWidget(self.btn_switch)
-        switch_row.addStretch()
-        profile_layout.addLayout(switch_row)
+        # Lighting page
+        lighting_page = QWidget()
+        lighting_layout = QVBoxLayout(lighting_page)
+        lighting_layout.setContentsMargins(14, 12, 14, 10)
+        lighting_layout.setSpacing(6)
+        lbl_brightness = QLabel("Brightness")
+        lbl_brightness.setObjectName("dimLabel")
+        lighting_layout.addWidget(lbl_brightness)
+        self.brightness = BrightnessControl(self._brightness_percent())
+        lighting_layout.addWidget(self.brightness)
+        note = QLabel(f"Factory max was {STOCK_MAX_PERCENT}%  ·  higher draws more USB power")
+        note.setObjectName("noteLabel")
+        lighting_layout.addWidget(note)
+        lighting_layout.addStretch()
+        self.pages.addWidget(lighting_page)
+        layout.addWidget(self.pages)
 
-        layout.addWidget(profile_group)
+        # --- Footer: version + settings gear ---
+        layout.addWidget(hline())
+        footer = QHBoxLayout()
+        footer.setContentsMargins(14, 4, 8, 4)
+        version = QLabel(f"v{__version__}")
+        version.setObjectName("noteLabel")
+        footer.addWidget(version)
+        footer.addStretch()
+        self.btn_settings = QToolButton()
+        self.btn_settings.setObjectName("gearBtn")
+        self.btn_settings.setText("⚙")
+        self.btn_settings.setToolTip("Settings")
+        self.btn_settings.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_settings.clicked.connect(self._show_settings_menu)
+        footer.addWidget(self.btn_settings)
+        layout.addLayout(footer)
 
-        # --- Brightness Control ---
-        brightness_group = QGroupBox("Brightness")
-        brightness_layout = QVBoxLayout(brightness_group)
+        # Settings are actions so the gear menu and the tray menu share them
+        self.act_foreground = QAction("Only use an app's profile while its window is focused", self)
+        self.act_foreground.setCheckable(True)
+        self.act_foreground.setChecked(self.config.get("foreground_only", True))
+        self.act_foreground.toggled.connect(self._on_settings_changed)
+        self.act_startup = QAction("Start with Windows", self)
+        self.act_startup.setCheckable(True)
+        self.act_startup.setChecked(is_startup_enabled())
+        self.act_startup.toggled.connect(self._on_startup_changed)
+        self.act_tray = QAction("Minimize to tray on close", self)
+        self.act_tray.setCheckable(True)
+        self.act_tray.setChecked(self.config.get("minimize_to_tray", True))
+        self.act_tray.toggled.connect(self._on_settings_changed)
+        self.settings_menu = QMenu(self)
+        self.settings_menu.addActions([self.act_foreground, self.act_startup, self.act_tray])
 
-        slider_row = QHBoxLayout()
-
-        self.brightness_slider = QSlider(Qt.Orientation.Horizontal)
-        self.brightness_slider.setRange(0, 100)
-        self.brightness_slider.setSingleStep(1)
-        self.brightness_slider.setPageStep(10)
-        self.brightness_slider.setValue(self._brightness_percent())
-        self.brightness_slider.setEnabled(False)
-
-        self.lbl_brightness_val = QLabel(f"{self._brightness_percent()}%")
-        self.lbl_brightness_val.setFixedWidth(48)
-        self.lbl_brightness_val.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.lbl_brightness_val.setStyleSheet(
-            f"font-size: 16px; font-weight: bold; color: {COLOR_ORANGE};"
-        )
-
-        slider_row.addWidget(self.brightness_slider, 1)
-        slider_row.addWidget(self.lbl_brightness_val)
-        brightness_layout.addLayout(slider_row)
-
-        self.lbl_brightness_note = QLabel(
-            f"Factory max was {STOCK_MAX_PERCENT}%  ·  higher draws more USB power"
-        )
-        self.lbl_brightness_note.setStyleSheet(f"color: {COLOR_TEXT_DIM}; font-size: 11px;")
-        self.lbl_brightness_note.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        brightness_layout.addWidget(self.lbl_brightness_note)
+        # --- Tray quick controls ---
+        self.mini = MiniPopup(profiles, self._brightness_percent())
+        self.mini.profiles.selected.connect(self._switch_profile)
+        self.mini.open_requested.connect(self._show_main_window)
 
         # Apply live while dragging, debounced so we don't flood the HID endpoint
+        self.brightness_controls = [self.brightness, self.mini.brightness]
         self._brightness_debounce = QTimer(self)
         self._brightness_debounce.setSingleShot(True)
         self._brightness_debounce.setInterval(150)
         self._brightness_debounce.timeout.connect(self._on_brightness_changed)
-        self.brightness_slider.valueChanged.connect(self._on_brightness_slider_moved)
-
-        layout.addWidget(brightness_group)
-
-        # --- Default Profile Rule ---
-        default_group = QGroupBox("Default Profile")
-        default_layout = QHBoxLayout(default_group)
-        default_layout.setContentsMargins(12, 16, 12, 12)
-
-        lbl_default = QLabel("When no app is matched, use:")
-        lbl_default.setStyleSheet(f"color: {COLOR_TEXT}; font-size: 13px;")
-
-        self.cmb_default = QComboBox()
-        self.cmb_default.setFixedWidth(150)
-        for pid, pdata in self.config["profiles"].items():
-            self.cmb_default.addItem(pdata["name"], pid)
-        idx = self.cmb_default.findData(self.config.get("default_profile", "0"))
-        if idx >= 0:
-            self.cmb_default.setCurrentIndex(idx)
-        self.cmb_default.currentIndexChanged.connect(self._on_default_changed)
-
-        default_layout.addWidget(lbl_default)
-        default_layout.addWidget(self.cmb_default)
-        default_layout.addStretch()
-
-        layout.addWidget(default_group)
-
-        # --- Rules ---
-        rules_group = QGroupBox("Auto-Switch Rules")
-        rules_group_layout = QVBoxLayout(rules_group)
-        rules_group_layout.setSpacing(0)
-        rules_group_layout.setContentsMargins(8, 20, 8, 8)
-
-        self.rules_container = QWidget()
-        # Scoped by object name: a selector-less rule would cascade into every child,
-        # including the profile combo popups, leaving them see-through
-        self.rules_container.setObjectName("rulesContainer")
-        self.rules_container.setStyleSheet("#rulesContainer { background: transparent; }")
-        self.rules_layout = QVBoxLayout(self.rules_container)
-        self.rules_layout.setSpacing(6)
-        self.rules_layout.setContentsMargins(0, 0, 0, 0)
-        self.rules_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
-
-        self.rule_rows: list[RuleRow] = []
-
-        rules_group_layout.addWidget(self.rules_container)
-
-        btn_add = QPushButton("+ Add Rule")
-        btn_add.setObjectName("btnAdd")
-        btn_add.clicked.connect(lambda: self._add_rule_row())
-        rules_group_layout.addWidget(btn_add)
-
-        layout.addWidget(rules_group, 1)
-
-        # --- Settings ---
-        settings_group = QGroupBox("Settings")
-        settings_layout = QVBoxLayout(settings_group)
-
-        self.chk_tray = QCheckBox("Minimize to tray on close")
-        self.chk_tray.setChecked(self.config.get("minimize_to_tray", True))
-        self.chk_tray.stateChanged.connect(self._on_settings_changed)
-
-        self.chk_startup = QCheckBox("Start with Windows")
-        self.chk_startup.setChecked(is_startup_enabled())
-        self.chk_startup.stateChanged.connect(self._on_startup_changed)
-
-        self.chk_foreground = QCheckBox("Only use an app's profile while its window is focused")
-        self.chk_foreground.setChecked(self.config.get("foreground_only", True))
-        self.chk_foreground.stateChanged.connect(self._on_settings_changed)
-
-        settings_layout.addWidget(self.chk_foreground)
-        settings_layout.addWidget(self.chk_tray)
-        settings_layout.addWidget(self.chk_startup)
-        layout.addWidget(settings_group)
+        for control in self.brightness_controls:
+            control.changed.connect(self._on_brightness_slider_moved)
 
         self._load_rules()
-        self.statusBar().showMessage(f"v{__version__}  ·  Protocol: WLMouse HID v1.0.7")
-
-        # Start as tall as the screen allows, centered
+        self.adjustSize()
         screen = QApplication.primaryScreen().availableGeometry()
-        self.resize(620, screen.height() - 64)
-        self.move(screen.center().x() - 310, screen.top())
+        self.move(screen.center() - self.rect().center())
+
+    def _show_settings_menu(self):
+        # Open upwards, right-aligned to the gear (it sits at the bottom of the window)
+        hint = self.settings_menu.sizeHint()
+        pos = self.btn_settings.mapToGlobal(QPoint(self.btn_settings.width() - hint.width(), -hint.height()))
+        self.settings_menu.exec(pos)
 
     def _init_tray(self):
         self.tray = QSystemTrayIcon(self)
         if LOGO_PATH.exists():
             self.tray.setIcon(QIcon(str(ICON_PATH)))
         self.tray.activated.connect(self._on_tray_click)
+
         menu = QMenu()
-        show_action = QAction("Show", self)
-        show_action.triggered.connect(self.show)
+        self.act_tray_status = QAction("YING 75", self)
+        self.act_tray_status.setEnabled(False)
+        menu.addAction(self.act_tray_status)
+        menu.addSeparator()
+        profile_group = QActionGroup(self)
+        self.tray_profile_actions: dict[str, QAction] = {}
+        for pid, pdata in self.config["profiles"].items():
+            act = QAction(pdata["name"], self)
+            act.setCheckable(True)
+            act.triggered.connect(lambda _=False, p=pid: self._switch_profile(p))
+            profile_group.addAction(act)
+            menu.addAction(act)
+            self.tray_profile_actions[pid] = act
+        menu.addSeparator()
+        menu.addActions([self.act_foreground, self.act_startup])
+        menu.addSeparator()
+        open_action = QAction("Open window", self)
+        open_action.triggered.connect(self._show_main_window)
         quit_action = QAction("Quit", self)
         quit_action.triggered.connect(QApplication.quit)
-        menu.addAction(show_action)
-        menu.addAction(quit_action)
+        menu.addActions([open_action, quit_action])
+        self.tray_menu = menu  # keep a reference; the tray doesn't own it
         self.tray.setContextMenu(menu)
         self.tray.show()
+        self._refresh_profile_ui()
 
     def _on_tray_click(self, reason):
         if reason == QSystemTrayIcon.ActivationReason.Trigger:
-            self.show()
-            self.raise_()
-            self.activateWindow()
+            self.mini.toggle_near(self.tray.geometry())
+
+    def _show_main_window(self):
+        self.mini.hide()
+        self.showNormal()
+        self.raise_()
+        self.activateWindow()
+
+    def _refresh_profile_ui(self):
+        """Reflect the active profile in the window, the mini popup and the tray menu."""
+        pid = self.current_profile
+        self.profile_selector.set_active(pid)
+        self.mini.profiles.set_active(pid)
+        if pid in self.tray_profile_actions:
+            self.tray_profile_actions[pid].setChecked(True)
+        self.tray.setToolTip(f"WLMouse - {self._profile_name(pid)}")
+
 
     def _auto_start(self):
         """Start monitoring and keep (re)connecting to the keyboard in the background."""
@@ -862,7 +1092,11 @@ class MainWindow(QMainWindow):
 
     def _set_connected_ui(self, connected: bool):
         color, text = ("#4caf50", "Connected") if connected else ("#ff4444", "Disconnected")
-        self.lbl_device.setText(f"<span style='color:{color};'>&#9679;</span> {text}")
+        dot = f"<span style='color:{color};'>&#9679;</span>"
+        self.lbl_device.setText(f"{dot} {text}")
+        self.mini.lbl_status.setText(dot)
+        self.mini.lbl_status.setToolTip(text)
+        self.act_tray_status.setText(f"YING 75 · {text}")
 
     def _check_connection(self):
         present = self._keyboard_present()
@@ -892,12 +1126,8 @@ class MainWindow(QMainWindow):
                 profile_str = str(profile_id)
                 if profile_str in self.config.get("profiles", {}):
                     self.current_profile = profile_str
-                    name = self._profile_name(profile_str)
-                    self.lbl_profile.setText(name)
-                    idx = self.cmb_manual.findData(profile_str)
-                    if idx >= 0:
-                        self.cmb_manual.setCurrentIndex(idx)
-                    self._log(f"Current profile: {name}")
+                    self._refresh_profile_ui()
+                    self._log(f"Current profile: {self._profile_name(profile_str)}")
         except Exception as e:
             print(f"Read profile error: {e}")
 
@@ -912,23 +1142,17 @@ class MainWindow(QMainWindow):
         name = self._profile_name(profile_id)
         if not self.hid.connected:
             self._log(f"Keyboard not connected — {name} will be applied on reconnect")
+            self._refresh_profile_ui()  # undo the highlight of the clicked button
             return False
         self._log(f"Switching -> {name}")
         success = self.hid.switch_profile(pid)
         if success:
             self.current_profile = profile_id
-            self.lbl_profile.setText(name)
-            self.tray.setToolTip(f"WLMouse - {name}")
-            idx = self.cmb_manual.findData(profile_id)
-            if idx >= 0:
-                self.cmb_manual.setCurrentIndex(idx)
             self._log(f"Switched to: {name}")
         else:
             self._log(f"ERROR: Failed to switch to {name}")
+        self._refresh_profile_ui()
         return success
-
-    def _manual_switch(self):
-        self._switch_profile(self.cmb_manual.currentData())
 
     def _on_process_matched(self, process_name: str, profile_id: str):
         self._log(f"Detected: {process_name} -> {self._profile_name(profile_id)}")
@@ -946,16 +1170,33 @@ class MainWindow(QMainWindow):
         self._switch_profile(default)
 
     def _load_rules(self):
+        self.rule_rows: list[RuleRow] = []
         for rule in self.config.get("rules", []):
             self._add_rule_row(rule["process"], rule["profile"])
+        self.mini.set_rule_count(len(self.rule_rows))
 
-    def _add_rule_row(self, process: str = "", profile: str = "0"):
+    def _add_rule_row(self, process: str, profile: str):
         row = RuleRow(self.config["profiles"], process, profile)
         row.deleted.connect(self._remove_rule_row)
         row.changed.connect(self._auto_save_rules)
         self.rule_rows.append(row)
         self.rules_layout.addWidget(row)
-        self._adjust_window_height()
+
+    def _add_app(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Select the game or app", "C:/", "Executables (*.exe);;All Files (*)"
+        )
+        if not path:
+            return
+        name = Path(path).name
+        if any(row.process_name.lower() == name.lower() for row in self.rule_rows):
+            self._log(f"{name} already has a rule")
+            return
+        # A new app most likely wants a profile other than the fallback one
+        default = self.cmb_default.currentData()
+        profile = next((p for p in self.config["profiles"] if p != default), default)
+        self._add_rule_row(name, profile)
+        self._auto_save_rules()
 
     def _remove_rule_row(self, row_widget):
         if row_widget in self.rule_rows:
@@ -963,32 +1204,18 @@ class MainWindow(QMainWindow):
             self.rules_layout.removeWidget(row_widget)
             row_widget.deleteLater()
             self._auto_save_rules()
-            self._adjust_window_height()
-
-    def _adjust_window_height(self):
-        """Grow or shrink the window to fit the rule rows."""
-        base_height = 550
-        row_height = 50
-        needed = base_height + len(self.rule_rows) * row_height
-        screen = self.screen().availableGeometry().height()
-        new_h = min(needed, screen - 50)
-        if new_h > self.height():
-            self.resize(self.width(), new_h)
 
     def _auto_save_rules(self):
-        rules = []
-        for row in self.rule_rows:
-            rule = row.get_rule()
-            if rule:
-                rules.append(rule)
+        rules = [row.get_rule() for row in self.rule_rows]
         self.config["rules"] = rules
         save_config(self.config)
         self.monitor.update_rules(rules)
+        self.mini.set_rule_count(len(rules))
 
     def _on_settings_changed(self):
-        self.config["minimize_to_tray"] = self.chk_tray.isChecked()
-        self.config["foreground_only"] = self.chk_foreground.isChecked()
-        self.monitor.foreground_only = self.chk_foreground.isChecked()
+        self.config["minimize_to_tray"] = self.act_tray.isChecked()
+        self.config["foreground_only"] = self.act_foreground.isChecked()
+        self.monitor.foreground_only = self.act_foreground.isChecked()
         save_config(self.config)
 
     def _read_brightness(self):
@@ -996,7 +1223,8 @@ class MainWindow(QMainWindow):
         state = self.hid.read_prgb()
         if state:
             self.prgb_state = state
-            self.brightness_slider.setEnabled(True)
+            for control in self.brightness_controls:
+                control.slider.setEnabled(True)
         else:
             self._log("Could not read lighting state")
 
@@ -1044,26 +1272,30 @@ class MainWindow(QMainWindow):
             self._apply_brightness()
 
     def _on_brightness_slider_moved(self, value: int):
-        self.lbl_brightness_val.setText(f"{value}%")
+        # Keep the window and the mini popup sliders in sync
+        for control in self.brightness_controls:
+            control.set_value(value)
+        self._pending_brightness = value
         self._brightness_debounce.start()
 
     def _on_brightness_changed(self):
-        self.config["brightness_percent"] = self.brightness_slider.value()
+        self.config["brightness_percent"] = self._pending_brightness
         self.config.pop("brightness_max", None)
         save_config(self.config)
         self._apply_brightness()
 
-    def _on_startup_changed(self):
-        enabled = self.chk_startup.isChecked()
+    def _on_startup_changed(self, enabled: bool):
         try:
             set_startup_enabled(enabled)
             self._log(f"Start with Windows: {'enabled' if enabled else 'disabled'}")
         except Exception as e:
             self._log(f"ERROR: Could not change startup setting: {e}")
-            self.chk_startup.setChecked(not enabled)
+            self.act_startup.blockSignals(True)
+            self.act_startup.setChecked(not enabled)
+            self.act_startup.blockSignals(False)
 
     def closeEvent(self, event):
-        if self.chk_tray.isChecked():
+        if self.act_tray.isChecked():
             event.ignore()
             self.hide()
             self.tray.showMessage("WLMouse Auto Profiler",
@@ -1091,7 +1323,6 @@ def acquire_lock():
 
 
 def main():
-    import os
     lock = acquire_lock()
     if lock is None:
         # Another instance is running — try to bring it to foreground
