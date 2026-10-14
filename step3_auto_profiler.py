@@ -765,7 +765,10 @@ class MainWindow(QMainWindow):
         rules_group_layout.setContentsMargins(8, 20, 8, 8)
 
         self.rules_container = QWidget()
-        self.rules_container.setStyleSheet("background: transparent;")
+        # Scoped by object name: a selector-less rule would cascade into every child,
+        # including the profile combo popups, leaving them see-through
+        self.rules_container.setObjectName("rulesContainer")
+        self.rules_container.setStyleSheet("#rulesContainer { background: transparent; }")
         self.rules_layout = QVBoxLayout(self.rules_container)
         self.rules_layout.setSpacing(6)
         self.rules_layout.setContentsMargins(0, 0, 0, 0)
