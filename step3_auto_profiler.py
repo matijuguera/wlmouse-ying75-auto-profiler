@@ -869,7 +869,7 @@ class MainWindow(QMainWindow):
         layout.addLayout(tab_bar)
         layout.addWidget(hline())
 
-        # Rules page: one row per app, then the fallback ("Any other app") row
+        # Rules page: one row per app, then the fallback ("Desktop & other apps") row
         rules_page = QWidget()
         rules_layout = QVBoxLayout(rules_page)
         rules_layout.setContentsMargins(14, 10, 14, 10)
@@ -883,7 +883,7 @@ class MainWindow(QMainWindow):
         otherwise_layout = QHBoxLayout(otherwise)
         otherwise_layout.setContentsMargins(10, 4, 4, 4)
         otherwise_layout.setSpacing(6)
-        lbl_otherwise = QLabel("Any other app")
+        lbl_otherwise = QLabel("Desktop & other apps")
         lbl_otherwise.setObjectName("dimLabel")
         lbl_otherwise.setToolTip("Profile used when no app from the list is matched")
         self.cmb_default = make_profile_combo(profiles, self.config.get("default_profile", "0"))
