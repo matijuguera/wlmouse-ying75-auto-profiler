@@ -45,7 +45,7 @@ import wlmouse_protocol as proto
 
 STOCK_MAX_PERCENT = round(proto.STOCK_BRIGHTNESS_TABLE[-1] * 100 / proto.BRIGHTNESS_MAX_VALUE)
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
 FROZEN = getattr(sys, "frozen", False)  # running as the PyInstaller .exe
 BASE_DIR = Path(__file__).parent

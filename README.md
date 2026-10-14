@@ -16,18 +16,18 @@ The WLMouse YING 75 keyboard stores multiple profiles with different key configu
 2. **Sends HID command** — when a match is found, sends the profile-switch packet over USB
 3. **Reverts when you leave** — alt-tab, minimize or close the app and it switches back to your default profile
 
-Uncheck *"Only use an app's profile while its window is focused"* to match whenever the process is running instead.
+Turn off *"Only use an app's profile while its window is focused"* in the ⚙ menu to match whenever the process is running instead.
 
 ## Features
 
-- Auto-connect to keyboard on launch
-- Auto-start monitoring on launch
-- Process → Profile mapping with file browser
-- Manual profile switching
-- Brightness control with unlocked max (beyond the hub's ~47% cap)
-- Configurable default profile
-- Minimize to system tray
-- Start with Windows (registry-based)
+- Compact window: profile buttons on top, **Rules** and **Lighting** tabs, settings behind the ⚙ in the footer
+- One-click manual profile switching
+- App → profile rules (pick the game's `.exe`), plus a fallback profile for **Desktop & other apps**
+- Brightness slider up to the real hardware maximum (the hub caps it at ~47%)
+- Instant profile switching when every profile uses the same polling rate (see below)
+- Reconnects automatically when the keyboard is unplugged, or not ready yet at boot
+- Lives in the system tray; click the icon to open the window
+- Start with Windows
 - Single instance lock (prevents duplicate processes)
 - Dark theme UI matching WLMouse branding
 
@@ -35,7 +35,7 @@ Uncheck *"Only use an app's profile while its window is focused"* to match whene
 
 1. Grab **`WLMouseAutoProfiler.exe`** from the [latest release](https://github.com/matijuguera/wlmouse-ying75-auto-profiler/releases/latest)
 2. Run it — no Python or install needed
-3. Optional: tick **Start with Windows** in the app
+3. Optional: enable **Start with Windows** from the ⚙ menu
 
 > The .exe isn't code-signed, so Windows SmartScreen may warn the first time: click **More info → Run anyway**.
 
