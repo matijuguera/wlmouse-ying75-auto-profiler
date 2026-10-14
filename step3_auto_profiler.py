@@ -14,8 +14,9 @@ from pathlib import Path
 
 import hid
 import psutil
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QObject, QPoint, QRect, QSize
-from PyQt6.QtGui import QAction, QActionGroup, QCursor, QIcon, QPixmap
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QByteArray, QObject, QPoint, QRect, QSize
+from PyQt6.QtGui import QAction, QActionGroup, QCursor, QIcon, QPainter, QPainterPath, QPixmap
+from PyQt6.QtSvg import QSvgRenderer
 from PyQt6.QtWidgets import (
     QApplication,
     QButtonGroup,
@@ -53,7 +54,6 @@ RESOURCE_DIR = Path(getattr(sys, "_MEIPASS", BASE_DIR))
 DATA_DIR = Path(os.environ["APPDATA"]) / "WLMouseAutoProfiler" if FROZEN else BASE_DIR
 CONFIG_PATH = DATA_DIR / "config.json"
 LOGO_PATH = RESOURCE_DIR / "logo.jpg"
-ICON_PATH = RESOURCE_DIR / "logo.ico"
 
 DEFAULT_CONFIG = {
     "device": {"vendor_id": "0x36A7", "product_id": "0xF887", "usage_page": "0xFFA0"},
@@ -72,6 +72,63 @@ COLOR_LIGHTER_BG = "#2e2e2e"
 COLOR_TEXT = "#e0e0e0"
 COLOR_TEXT_DIM = "#888888"
 COLOR_BORDER = "#3a3a3a"
+
+LOGO_CORNER_RATIO = 0.22  # rounded-square app icon, like modern desktop app logos
+
+# Tabler Icons "settings" (MIT license), drawn flat in a single color
+GEAR_SVG = (
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="{color}" '
+    'stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">'
+    '<path d="M10.325 4.317c.426 -1.756 2.924 -1.756 3.35 0a1.724 1.724 0 0 0 2.573 1.066c1.543 '
+    '-.94 3.31 .826 2.37 2.37a1.724 1.724 0 0 0 1.065 2.572c1.756 .426 1.756 2.924 0 3.35a1.724 '
+    '1.724 0 0 0 -1.066 2.573c.94 1.543 -.826 3.31 -2.37 2.37a1.724 1.724 0 0 0 -2.572 1.065c-.426 '
+    '1.756 -2.924 1.756 -3.35 0a1.724 1.724 0 0 0 -2.573 -1.066c-1.543 .94 -3.31 -.826 -2.37 '
+    '-2.37a1.724 1.724 0 0 0 -1.065 -2.572c-1.756 -.426 -1.756 -2.924 0 -3.35a1.724 1.724 0 0 0 '
+    '1.066 -2.573c-.94 -1.543 .826 -3.31 2.37 -2.37c1 .608 2.296 .07 2.572 -1.065z"/>'
+    '<path d="M9 12a3 3 0 1 0 6 0a3 3 0 0 0 -6 0"/></svg>'
+)
+
+
+def rounded_logo(size: int) -> QPixmap:
+    """The app logo as a rounded square with transparent corners, rendered at `size` px."""
+    dpr = QApplication.instance().devicePixelRatio() if QApplication.instance() else 1.0
+    px = round(size * dpr)
+    source = QPixmap(str(LOGO_PATH)).scaled(
+        px, px, Qt.AspectRatioMode.IgnoreAspectRatio, Qt.TransformationMode.SmoothTransformation)
+    result = QPixmap(px, px)
+    result.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(result)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    clip = QPainterPath()
+    clip.addRoundedRect(0, 0, px, px, px * LOGO_CORNER_RATIO, px * LOGO_CORNER_RATIO)
+    painter.setClipPath(clip)
+    painter.drawPixmap(0, 0, source)
+    painter.end()
+    result.setDevicePixelRatio(dpr)
+    return result
+
+
+def app_icon() -> QIcon:
+    """Rounded logo at every size Windows asks for (tray, title bar, taskbar, alt-tab)."""
+    icon = QIcon()
+    for size in (16, 20, 24, 32, 40, 48, 64, 128, 256):
+        icon.addPixmap(rounded_logo(size))
+    return icon
+
+
+def svg_icon(svg_template: str, color: str, hover_color: str, size: int = 18) -> QIcon:
+    """Flat single-color icon from an SVG template; `hover_color` is used on mouse-over."""
+    icon = QIcon()
+    for mode, fill in ((QIcon.Mode.Normal, color), (QIcon.Mode.Active, hover_color)):
+        renderer = QSvgRenderer(QByteArray(svg_template.format(color=fill).encode()))
+        pixmap = QPixmap(size * 2, size * 2)  # 2x so it stays sharp on scaled displays
+        pixmap.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(pixmap)
+        renderer.render(painter)
+        painter.end()
+        icon.addPixmap(pixmap, mode)
+    return icon
+
 
 STARTUP_REG_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 STARTUP_REG_NAME = "WLMouseAutoProfiler"
@@ -211,12 +268,7 @@ STYLESHEET = f"""
     QToolButton#gearBtn {{
         background: transparent;
         border: none;
-        color: {COLOR_TEXT_DIM};
-        font-size: 17px;
-        padding: 2px 4px;
-    }}
-    QToolButton#gearBtn:hover {{
-        color: {COLOR_ORANGE};
+        padding: 4px;
     }}
     QMenu {{
         background-color: {COLOR_PANEL_BG};
@@ -748,8 +800,7 @@ class MiniPopup(QFrame):
         header.setSpacing(8)
         if LOGO_PATH.exists():
             logo = QLabel()
-            logo.setPixmap(QPixmap(str(LOGO_PATH)).scaled(
-                18, 18, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
+            logo.setPixmap(rounded_logo(18))
             header.addWidget(logo)
         title = QLabel("YING 75")
         title.setObjectName("titleLabel")
@@ -843,7 +894,7 @@ class MainWindow(QMainWindow):
     def _init_ui(self):
         self.setWindowTitle("WLMouse Auto Profiler")
         if LOGO_PATH.exists():
-            self.setWindowIcon(QIcon(str(ICON_PATH)))
+            self.setWindowIcon(app_icon())
         profiles = self.config["profiles"]
 
         central = QWidget()
@@ -863,8 +914,7 @@ class MainWindow(QMainWindow):
         header.setSpacing(8)
         if LOGO_PATH.exists():
             logo = QLabel()
-            logo.setPixmap(QPixmap(str(LOGO_PATH)).scaled(
-                22, 22, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
+            logo.setPixmap(rounded_logo(22))
             header.addWidget(logo)
         title = QLabel("Auto Profiler")
         title.setObjectName("titleLabel")
@@ -905,7 +955,7 @@ class MainWindow(QMainWindow):
         layout.addLayout(tab_bar)
         layout.addWidget(hline())
 
-        # Rules page: one row per app, then the fallback ("Otherwise") row
+        # Rules page: one row per app, then the fallback ("Any other app") row
         rules_page = QWidget()
         rules_layout = QVBoxLayout(rules_page)
         rules_layout.setContentsMargins(14, 10, 14, 10)
@@ -919,7 +969,7 @@ class MainWindow(QMainWindow):
         otherwise_layout = QHBoxLayout(otherwise)
         otherwise_layout.setContentsMargins(10, 4, 4, 4)
         otherwise_layout.setSpacing(6)
-        lbl_otherwise = QLabel("Otherwise")
+        lbl_otherwise = QLabel("Any other app")
         lbl_otherwise.setObjectName("dimLabel")
         lbl_otherwise.setToolTip("Profile used when no app from the list is matched")
         self.cmb_default = make_profile_combo(profiles, self.config.get("default_profile", "0"))
@@ -964,7 +1014,9 @@ class MainWindow(QMainWindow):
         footer.addStretch()
         self.btn_settings = QToolButton()
         self.btn_settings.setObjectName("gearBtn")
-        self.btn_settings.setText("⚙")
+        self.btn_settings.setIcon(svg_icon(GEAR_SVG, COLOR_TEXT_DIM, COLOR_ORANGE))
+        self.btn_settings.setIconSize(QSize(18, 18))
+        self.btn_settings.setAutoRaise(True)  # uses the hover (Active) icon color
         self.btn_settings.setToolTip("Settings")
         self.btn_settings.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_settings.clicked.connect(self._show_settings_menu)
@@ -1015,7 +1067,7 @@ class MainWindow(QMainWindow):
     def _init_tray(self):
         self.tray = QSystemTrayIcon(self)
         if LOGO_PATH.exists():
-            self.tray.setIcon(QIcon(str(ICON_PATH)))
+            self.tray.setIcon(app_icon())
         self.tray.activated.connect(self._on_tray_click)
 
         menu = QMenu()
@@ -1337,7 +1389,7 @@ def main():
     app = QApplication(sys.argv)
     app.setApplicationName("WLMouse Auto Profiler")
     if LOGO_PATH.exists():
-        app.setWindowIcon(QIcon(str(ICON_PATH)))
+        app.setWindowIcon(app_icon())
     app.setStyleSheet(STYLESHEET)
 
     window = MainWindow()
