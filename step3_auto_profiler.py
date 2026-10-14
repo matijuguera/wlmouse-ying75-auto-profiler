@@ -364,11 +364,9 @@ class HIDController:
 
     def switch_profile(self, profile_id: int) -> bool:
         """Switch the keyboard to the given profile (0-indexed)."""
-        packet = proto.set_profile(profile_id)
-        result = self._send(packet)
-        if result:
-            self.disconnect()
-        return result
+        # If the switch reboots the keyboard (polling rate change), the next
+        # _send fails on the stale handle and reconnects on its own
+        return self._send(proto.set_profile(profile_id))
 
     def read_profile(self) -> bool:
         """Request current profile ID from keyboard."""
@@ -835,25 +833,50 @@ class MainWindow(QMainWindow):
             self.activateWindow()
 
     def _auto_start(self):
-        """Auto-connect device and start monitoring on launch."""
-        if self.hid.connect():
-            self.lbl_device.setText(f"<span style='color:#4caf50;'>&#9679;</span> Connected")
+        """Start monitoring and keep (re)connecting to the keyboard in the background."""
+        self._set_connected_ui(False)
+        # The table lives in RAM, so any keyboard reset (profile switch with a
+        # different polling rate, replug, hub reset) reverts it to stock
+        self.brightness_watchdog = QTimer(self)
+        self.brightness_watchdog.timeout.connect(self._ensure_brightness)
+        self.brightness_watchdog.start(3000)
+        # Retry forever: at launch (e.g. Start with Windows, wake from sleep) the
+        # keyboard may not be enumerated yet, and it can be unplugged at any time
+        self.connection_timer = QTimer(self)
+        self.connection_timer.timeout.connect(self._check_connection)
+        self.connection_timer.start(2000)
+        self._check_connection()
+        self.monitor.update_rules(self.config.get("rules", []))
+        self.monitor.start()
+        self.monitoring = True
+        self._log("Monitoring started")
+
+    def _keyboard_present(self) -> bool:
+        devices = hid.enumerate(self.hid.vendor_id, self.hid.product_id)
+        return any(
+            not self.hid.usage_page or d["usage_page"] == self.hid.usage_page for d in devices
+        )
+
+    def _set_connected_ui(self, connected: bool):
+        color, text = ("#4caf50", "Connected") if connected else ("#ff4444", "Disconnected")
+        self.lbl_device.setText(f"<span style='color:{color};'>&#9679;</span> {text}")
+
+    def _check_connection(self):
+        present = self._keyboard_present()
+        if self.hid.connected and not present:
+            self.hid.disconnect()
+            self._set_connected_ui(False)
+            self._log("Device disconnected — waiting for it to come back")
+        elif not self.hid.connected and present and self.hid.connect():
+            self._set_connected_ui(True)
             self._log("Device connected")
             self._read_current_profile()
             self._read_brightness()
             self._apply_brightness()
-            # The table lives in RAM, so any keyboard reset (profile switch with a
-            # different polling rate, replug, hub reset) reverts it to stock
-            self.brightness_watchdog = QTimer(self)
-            self.brightness_watchdog.timeout.connect(self._ensure_brightness)
-            self.brightness_watchdog.start(3000)
-            self.monitor.update_rules(self.config.get("rules", []))
-            self.monitor.start()
-            self.monitoring = True
-            self._log("Monitoring started")
-        else:
-            self.lbl_device.setText(f"<span style='color:#ff4444;'>&#9679;</span> Disconnected")
-            self._log("Device not found — check USB connection")
+            # Re-evaluate the rules so the right profile is applied after reconnecting
+            self.monitor.current_match = None
+        elif self.hid.connected:
+            self._set_connected_ui(True)  # _send may have reconnected on its own
 
     def _read_current_profile(self):
         """Read current profile from keyboard and sync the UI selector."""
@@ -884,6 +907,9 @@ class MainWindow(QMainWindow):
     def _switch_profile(self, profile_id: str) -> bool:
         pid = int(profile_id)
         name = self._profile_name(profile_id)
+        if not self.hid.connected:
+            self._log(f"Keyboard not connected — {name} will be applied on reconnect")
+            return False
         self._log(f"Switching -> {name}")
         success = self.hid.switch_profile(pid)
         if success:
@@ -1006,8 +1032,8 @@ class MainWindow(QMainWindow):
     def _ensure_brightness(self):
         """Re-apply the brightness table if the keyboard reset since the last check."""
         percent = self._brightness_percent()
-        if percent == 0 or not hid.enumerate(self.hid.vendor_id, self.hid.product_id):
-            return  # off, or unplugged — avoid blocking on reconnect retries
+        if percent == 0 or not self.hid.connected:
+            return  # off, or disconnected — _check_connection handles reconnecting
         level4 = proto.CMD_BRIGHTNESS_LEVEL1 + 3
         value = self.hid._query_cmd(proto.brightness_level_cmd(4), level4)
         if value is not None and value != self._brightness_table(percent)[-1]:
