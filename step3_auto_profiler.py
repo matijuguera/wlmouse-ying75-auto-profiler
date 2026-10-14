@@ -6,6 +6,7 @@ Requires: pip install hidapi psutil PyQt6
 
 import ctypes
 import json
+import math
 import os
 import sys
 import time
@@ -14,8 +15,8 @@ from pathlib import Path
 
 import hid
 import psutil
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QByteArray, QObject, QPoint, QRect, QSize
-from PyQt6.QtGui import QAction, QActionGroup, QCursor, QIcon, QPainter, QPainterPath, QPixmap
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QByteArray, QObject, QPoint, QRectF, QSize
+from PyQt6.QtGui import QAction, QActionGroup, QBrush, QIcon, QPainter, QPixmap
 from PyQt6.QtSvg import QSvgRenderer
 from PyQt6.QtWidgets import (
     QApplication,
@@ -91,20 +92,23 @@ GEAR_SVG = (
 
 def rounded_logo(size: int) -> QPixmap:
     """The app logo as a rounded square with transparent corners, rendered at `size` px."""
-    dpr = QApplication.instance().devicePixelRatio() if QApplication.instance() else 1.0
-    px = round(size * dpr)
+    scale = QApplication.instance().devicePixelRatio() if QApplication.instance() else 1.0
+    px = math.ceil(size * scale)
     source = QPixmap(str(LOGO_PATH)).scaled(
         px, px, Qt.AspectRatioMode.IgnoreAspectRatio, Qt.TransformationMode.SmoothTransformation)
     result = QPixmap(px, px)
     result.fill(Qt.GlobalColor.transparent)
     painter = QPainter(result)
+    # Fill a rounded rect with the logo as its texture: unlike setClipPath (which is
+    # aliased in the raster engine), shape fills are antialiased, so corners stay smooth
     painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-    clip = QPainterPath()
-    clip.addRoundedRect(0, 0, px, px, px * LOGO_CORNER_RATIO, px * LOGO_CORNER_RATIO)
-    painter.setClipPath(clip)
-    painter.drawPixmap(0, 0, source)
+    painter.setPen(Qt.PenStyle.NoPen)
+    painter.setBrush(QBrush(source))
+    radius = px * LOGO_CORNER_RATIO
+    painter.drawRoundedRect(QRectF(0, 0, px, px), radius, radius)
     painter.end()
-    result.setDevicePixelRatio(dpr)
+    # Exactly `size` logical px, so labels don't rescale (and blur) it on scaled displays
+    result.setDevicePixelRatio(px / size)
     return result
 
 
@@ -215,9 +219,6 @@ STYLESHEET = f"""
     }}
     QFrame#hline {{
         background-color: {COLOR_LIGHTER_BG};
-    }}
-    QFrame#miniPopup {{
-        border: 1px solid {COLOR_BORDER};
     }}
     QFrame#ruleRow {{
         background-color: {COLOR_PANEL_BG};
@@ -667,7 +668,7 @@ class ProfileSelector(QWidget):
 
     selected = pyqtSignal(str)
 
-    def __init__(self, profiles: dict, short: bool = False, parent=None):
+    def __init__(self, profiles: dict, parent=None):
         super().__init__(parent)
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -675,7 +676,7 @@ class ProfileSelector(QWidget):
         self.group = QButtonGroup(self)
         self.buttons: dict[str, QPushButton] = {}
         for pid, pdata in profiles.items():
-            btn = QPushButton(str(int(pid) + 1) if short else pdata["name"])
+            btn = QPushButton(pdata["name"])
             btn.setObjectName("segBtn")
             btn.setCheckable(True)
             btn.setToolTip(pdata["name"])
@@ -695,15 +696,11 @@ class BrightnessControl(QWidget):
 
     changed = pyqtSignal(int)
 
-    def __init__(self, value: int, show_icon: bool = False, parent=None):
+    def __init__(self, value: int, parent=None):
         super().__init__(parent)
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(8)
-        if show_icon:
-            icon = QLabel("☀")
-            icon.setObjectName("dimLabel")
-            layout.addWidget(icon)
         self.slider = QSlider(Qt.Orientation.Horizontal)
         self.slider.setRange(0, 100)
         self.slider.setPageStep(10)
@@ -721,11 +718,6 @@ class BrightnessControl(QWidget):
         self.lbl_value.setText(f"{value}%")
         self.changed.emit(value)
 
-    def set_value(self, value: int):
-        self.slider.blockSignals(True)
-        self.slider.setValue(value)
-        self.slider.blockSignals(False)
-        self.lbl_value.setText(f"{value}%")
 
 
 class RuleRow(QFrame):
@@ -780,84 +772,6 @@ def hline() -> QFrame:
     line.setObjectName("hline")
     line.setFixedHeight(1)
     return line
-
-
-class MiniPopup(QFrame):
-    """Quick controls shown on tray left-click; closes when clicking elsewhere."""
-
-    open_requested = pyqtSignal()
-
-    def __init__(self, profiles: dict, brightness: int):
-        super().__init__(None, Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint)
-        self.setObjectName("miniPopup")
-        self.setFixedWidth(260)
-        self._hidden_at = 0.0
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(12, 10, 12, 12)
-        layout.setSpacing(10)
-
-        header = QHBoxLayout()
-        header.setSpacing(8)
-        if LOGO_PATH.exists():
-            logo = QLabel()
-            logo.setPixmap(rounded_logo(18))
-            header.addWidget(logo)
-        title = QLabel("YING 75")
-        title.setObjectName("titleLabel")
-        header.addWidget(title)
-        header.addStretch()
-        self.lbl_status = QLabel()
-        self.lbl_status.setObjectName("statusIcon")
-        header.addWidget(self.lbl_status)
-        layout.addLayout(header)
-
-        self.profiles = ProfileSelector(profiles, short=True)
-        layout.addWidget(self.profiles)
-
-        self.brightness = BrightnessControl(brightness, show_icon=True)
-        layout.addWidget(self.brightness)
-
-        rules = QFrame()
-        rules.setObjectName("ruleRow")
-        rules_layout = QHBoxLayout(rules)
-        rules_layout.setContentsMargins(10, 4, 4, 4)
-        self.lbl_rules = QLabel()
-        btn_edit = QPushButton("Edit ▸")
-        btn_edit.setObjectName("linkBtn")
-        btn_edit.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn_edit.clicked.connect(self.open_requested.emit)
-        rules_layout.addWidget(self.lbl_rules, 1)
-        rules_layout.addWidget(btn_edit)
-        layout.addWidget(rules)
-
-    def set_rule_count(self, count: int):
-        self.lbl_rules.setText(f"<span style='color:{COLOR_TEXT_DIM};'>Auto:</span> "
-                               f"{count} app{'' if count == 1 else 's'}")
-
-    def toggle_near(self, anchor: QRect):
-        # Clicking the tray icon while open first closes the popup (outside click);
-        # don't immediately reopen it on that same click
-        if self.isVisible() or time.monotonic() - self._hidden_at < 0.3:
-            self.hide()
-            return
-        self.adjustSize()
-        if not anchor.isValid() or anchor.isEmpty():
-            anchor = QRect(QCursor.pos(), QSize(1, 1))
-        screen = QApplication.screenAt(anchor.center()) or QApplication.primaryScreen()
-        avail = screen.availableGeometry()
-        x = anchor.center().x() - self.width() // 2
-        y = anchor.top() - self.height() - 8
-        if y < avail.top():
-            y = anchor.bottom() + 8
-        x = max(avail.left() + 8, min(x, avail.right() - self.width() - 8))
-        y = max(avail.top() + 8, min(y, avail.bottom() - self.height() - 8))
-        self.move(x, y)
-        self.show()
-        self.activateWindow()
-
-    def hideEvent(self, event):
-        self._hidden_at = time.monotonic()
-        super().hideEvent(event)
 
 
 class MainWindow(QMainWindow):
@@ -1039,19 +953,12 @@ class MainWindow(QMainWindow):
         self.settings_menu = QMenu(self)
         self.settings_menu.addActions([self.act_foreground, self.act_startup, self.act_tray])
 
-        # --- Tray quick controls ---
-        self.mini = MiniPopup(profiles, self._brightness_percent())
-        self.mini.profiles.selected.connect(self._switch_profile)
-        self.mini.open_requested.connect(self._show_main_window)
-
         # Apply live while dragging, debounced so we don't flood the HID endpoint
-        self.brightness_controls = [self.brightness, self.mini.brightness]
         self._brightness_debounce = QTimer(self)
         self._brightness_debounce.setSingleShot(True)
         self._brightness_debounce.setInterval(150)
         self._brightness_debounce.timeout.connect(self._on_brightness_changed)
-        for control in self.brightness_controls:
-            control.changed.connect(self._on_brightness_slider_moved)
+        self.brightness.changed.connect(self._on_brightness_slider_moved)
 
         self._load_rules()
         self.adjustSize()
@@ -1099,19 +1006,17 @@ class MainWindow(QMainWindow):
 
     def _on_tray_click(self, reason):
         if reason == QSystemTrayIcon.ActivationReason.Trigger:
-            self.mini.toggle_near(self.tray.geometry())
+            self._show_main_window()
 
     def _show_main_window(self):
-        self.mini.hide()
         self.showNormal()
         self.raise_()
         self.activateWindow()
 
     def _refresh_profile_ui(self):
-        """Reflect the active profile in the window, the mini popup and the tray menu."""
+        """Reflect the active profile in the window and the tray menu."""
         pid = self.current_profile
         self.profile_selector.set_active(pid)
-        self.mini.profiles.set_active(pid)
         if pid in self.tray_profile_actions:
             self.tray_profile_actions[pid].setChecked(True)
         self.tray.setToolTip(f"WLMouse - {self._profile_name(pid)}")
@@ -1146,8 +1051,6 @@ class MainWindow(QMainWindow):
         color, text = ("#4caf50", "Connected") if connected else ("#ff4444", "Disconnected")
         dot = f"<span style='color:{color};'>&#9679;</span>"
         self.lbl_device.setText(f"{dot} {text}")
-        self.mini.lbl_status.setText(dot)
-        self.mini.lbl_status.setToolTip(text)
         self.act_tray_status.setText(f"YING 75 · {text}")
 
     def _check_connection(self):
@@ -1225,7 +1128,6 @@ class MainWindow(QMainWindow):
         self.rule_rows: list[RuleRow] = []
         for rule in self.config.get("rules", []):
             self._add_rule_row(rule["process"], rule["profile"])
-        self.mini.set_rule_count(len(self.rule_rows))
 
     def _add_rule_row(self, process: str, profile: str):
         row = RuleRow(self.config["profiles"], process, profile)
@@ -1262,7 +1164,6 @@ class MainWindow(QMainWindow):
         self.config["rules"] = rules
         save_config(self.config)
         self.monitor.update_rules(rules)
-        self.mini.set_rule_count(len(rules))
 
     def _on_settings_changed(self):
         self.config["minimize_to_tray"] = self.act_tray.isChecked()
@@ -1275,8 +1176,7 @@ class MainWindow(QMainWindow):
         state = self.hid.read_prgb()
         if state:
             self.prgb_state = state
-            for control in self.brightness_controls:
-                control.slider.setEnabled(True)
+            self.brightness.slider.setEnabled(True)
         else:
             self._log("Could not read lighting state")
 
@@ -1324,9 +1224,6 @@ class MainWindow(QMainWindow):
             self._apply_brightness()
 
     def _on_brightness_slider_moved(self, value: int):
-        # Keep the window and the mini popup sliders in sync
-        for control in self.brightness_controls:
-            control.set_value(value)
         self._pending_brightness = value
         self._brightness_debounce.start()
 
