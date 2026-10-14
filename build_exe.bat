@@ -1,5 +1,6 @@
 @echo off
 rem Builds dist\WLMouseAutoProfiler.exe (standalone, no Python needed to run it)
+cd /d "%~dp0"
 python -m pip install -r requirements.txt pyinstaller || exit /b 1
 python -m PyInstaller --noconfirm --clean --onefile --windowed ^
     --name WLMouseAutoProfiler --icon logo.ico ^
