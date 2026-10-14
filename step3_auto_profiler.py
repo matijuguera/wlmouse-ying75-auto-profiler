@@ -16,7 +16,7 @@ from pathlib import Path
 import hid
 import psutil
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QByteArray, QObject, QPoint, QRectF, QSize
-from PyQt6.QtGui import QAction, QActionGroup, QBrush, QIcon, QPainter, QPixmap
+from PyQt6.QtGui import QAction, QBrush, QIcon, QPainter, QPixmap
 from PyQt6.QtSvg import QSvgRenderer
 from PyQt6.QtWidgets import (
     QApplication,
@@ -952,6 +952,11 @@ class MainWindow(QMainWindow):
         self.act_tray.toggled.connect(self._on_settings_changed)
         self.settings_menu = QMenu(self)
         self.settings_menu.addActions([self.act_foreground, self.act_startup, self.act_tray])
+        # The only way out when "minimize to tray on close" is on
+        self.settings_menu.addSeparator()
+        quit_action = QAction("Quit", self)
+        quit_action.triggered.connect(QApplication.quit)
+        self.settings_menu.addAction(quit_action)
 
         # Apply live while dragging, debounced so we don't flood the HID endpoint
         self._brightness_debounce = QTimer(self)
@@ -976,37 +981,17 @@ class MainWindow(QMainWindow):
         if LOGO_PATH.exists():
             self.tray.setIcon(app_icon())
         self.tray.activated.connect(self._on_tray_click)
-
-        menu = QMenu()
-        self.act_tray_status = QAction("YING 75", self)
-        self.act_tray_status.setEnabled(False)
-        menu.addAction(self.act_tray_status)
-        menu.addSeparator()
-        profile_group = QActionGroup(self)
-        self.tray_profile_actions: dict[str, QAction] = {}
-        for pid, pdata in self.config["profiles"].items():
-            act = QAction(pdata["name"], self)
-            act.setCheckable(True)
-            act.triggered.connect(lambda _=False, p=pid: self._switch_profile(p))
-            profile_group.addAction(act)
-            menu.addAction(act)
-            self.tray_profile_actions[pid] = act
-        menu.addSeparator()
-        menu.addActions([self.act_foreground, self.act_startup])
-        menu.addSeparator()
-        open_action = QAction("Open window", self)
-        open_action.triggered.connect(self._show_main_window)
-        quit_action = QAction("Quit", self)
-        quit_action.triggered.connect(QApplication.quit)
-        menu.addActions([open_action, quit_action])
-        self.tray_menu = menu  # keep a reference; the tray doesn't own it
-        self.tray.setContextMenu(menu)
+        self._connection_text = "Disconnected"
         self.tray.show()
         self._refresh_profile_ui()
 
     def _on_tray_click(self, reason):
-        if reason == QSystemTrayIcon.ActivationReason.Trigger:
+        # No context menu: left or right click both just bring up the window
+        if reason in (QSystemTrayIcon.ActivationReason.Trigger, QSystemTrayIcon.ActivationReason.Context):
             self._show_main_window()
+
+    def _update_tray_tooltip(self):
+        self.tray.setToolTip(f"WLMouse - {self._profile_name(self.current_profile)} · {self._connection_text}")
 
     def _show_main_window(self):
         self.showNormal()
@@ -1014,13 +999,9 @@ class MainWindow(QMainWindow):
         self.activateWindow()
 
     def _refresh_profile_ui(self):
-        """Reflect the active profile in the window and the tray menu."""
-        pid = self.current_profile
-        self.profile_selector.set_active(pid)
-        if pid in self.tray_profile_actions:
-            self.tray_profile_actions[pid].setChecked(True)
-        self.tray.setToolTip(f"WLMouse - {self._profile_name(pid)}")
-
+        """Reflect the active profile in the window and the tray tooltip."""
+        self.profile_selector.set_active(self.current_profile)
+        self._update_tray_tooltip()
 
     def _auto_start(self):
         """Start monitoring and keep (re)connecting to the keyboard in the background."""
@@ -1051,7 +1032,8 @@ class MainWindow(QMainWindow):
         color, text = ("#4caf50", "Connected") if connected else ("#ff4444", "Disconnected")
         dot = f"<span style='color:{color};'>&#9679;</span>"
         self.lbl_device.setText(f"{dot} {text}")
-        self.act_tray_status.setText(f"YING 75 · {text}")
+        self._connection_text = text
+        self._update_tray_tooltip()
 
     def _check_connection(self):
         present = self._keyboard_present()
@@ -1248,7 +1230,7 @@ class MainWindow(QMainWindow):
             event.ignore()
             self.hide()
             self.tray.showMessage("WLMouse Auto Profiler",
-                "Running in background. Right-click tray to quit.",
+                "Still running in the tray. Quit from the settings menu.",
                 QSystemTrayIcon.MessageIcon.Information, 2000)
         else:
             QApplication.quit()
